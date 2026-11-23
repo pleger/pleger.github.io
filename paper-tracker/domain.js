@@ -6,24 +6,6 @@ export const statuses = [
   "aceptado",
   "rechazado",
 ];
-export const initialResearchers = [
-  {
-    id: "00000000-0000-4000-8000-000000000001",
-    first_name: "Paul",
-    last_name: "Leger",
-    emails: ["pleger@ucn.cl"],
-    is_admin: true,
-    orcid: "0000-0003-0969-5139",
-  },
-  {
-    id: "00000000-0000-4000-8000-000000000002",
-    first_name: "Agustín",
-    last_name: "Olivares",
-    emails: ["agustin.olivares@ce.ucn.cl"],
-    is_admin: true,
-    orcid: "0009-0002-6428-6805",
-  },
-];
 export function validOrcid(value) {
   const s = value.replace(/^https:\/\/orcid.org\//, "").toUpperCase();
   if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(s)) return false;
