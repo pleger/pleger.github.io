@@ -1,4 +1,11 @@
 import {
+  deadlineFields,
+  syncDeadlineFields,
+  participantFields,
+  paperOverview,
+  emailAvailability,
+} from "./paper-ui.js";
+import {
   statuses,
   validOrcid,
   daysUntil,
@@ -32,7 +39,7 @@ let db,
   authGeneration = 0;
 let settings = {
   id: 1,
-  email_enabled: false,
+  email_enabled: null,
   paper_created: true,
   paper_updated: true,
   ticket_assigned: true,
@@ -355,14 +362,12 @@ function render() {
       const ts = state.tickets.filter((t) => t.paper_id === p.id);
       html =
         pageHead(p.title, p.venue || "Destino por definir", "") +
-        `<div class="panel"><div class="detail-actions">${badge(p.status)}${
-          admin() || p.researcher_ids.includes(actual().id)
-            ? `<label class="status-control">Cambiar estado <select data-paper-status="${p.id}">${options(
-                statuses.map((s) => [s, s]),
-                p.status,
-              )}</select></label>`
-            : ""
-        }<span class="badge">${p.kind === "conference" ? "Conferencia" : "Revista"}</span>${due(p.deadline)}${avatars(p.researcher_ids)}${safeUrl(p.github_url) ? `<a class="button small" href="${esc(safeUrl(p.github_url))}" target="_blank" rel="noopener noreferrer">Repositorio ↗</a>` : ""}</div><p class="detail-description">${esc(p.description || "Agrega una descripción para contextualizar el proyecto.")}</p></div><div class="section-head"><h2>Tickets del paper <span class="badge">${ts.filter((t) => t.completed).length}/${ts.length} completados</span></h2>${canWork(p.id) ? addButton("ticket", "Nuevo ticket") : ""}</div><div class="panel">${
+        paperOverview(p, state.researchers, {
+          canWork: canWork(p.id),
+          admin: admin(),
+        }) +
+        emailAvailability(settings, admin()) +
+        `<div class="section-head"><h2>Tickets del paper <span class="badge">${ts.filter((t) => t.completed).length}/${ts.length} completados</span></h2>${canWork(p.id) ? addButton("ticket", "Nuevo ticket") : ""}</div><div class="panel">${
           ts
             .sort((a, b) => Number(a.completed) - Number(b.completed))
             .map(taskRow)
@@ -497,20 +502,11 @@ function openEditor(type, id) {
         statuses.map((s) => [s, s]),
         row.status || "iniciando",
       ) +
-      field(
-        "deadline",
-        "Deadline de envío (fecha del equipo)",
-        "date",
-        row.deadline,
-      ) +
-      `<label for="f-researcher_ids">Investigadores participantes</label><select id="f-researcher_ids" name="researcher_ids" multiple>${activeResearchers()
-        .map(
-          (r) =>
-            `<option value="${r.id}" ${(row.researcher_ids || [actual().id]).includes(r.id) ? "selected" : ""}>${esc(full(r))}</option>`,
-        )
-        .join(
-          "",
-        )}</select><p class="hint">Usa Ctrl/Cmd para seleccionar varias personas. La hora y zona del cierre deben confirmarse con la conferencia.</p>`;
+      deadlineFields(row.deadline) +
+      participantFields(
+        activeResearchers(),
+        row.researcher_ids || [actual().id],
+      );
   if (type === "ticket")
     html =
       field(
@@ -548,7 +544,8 @@ function openEditor(type, id) {
         ],
         String(row.completed || false),
       );
-  $("#fields").innerHTML = html;
+  $("#fields").innerHTML =
+    (type === "ticket" ? emailAvailability(settings, admin()) : "") + html;
   $("#modal").showModal();
 }
 $("#editor").addEventListener("submit", async (e) => {
@@ -596,7 +593,8 @@ $("#editor").addEventListener("submit", async (e) => {
         venue: str("venue"),
         github_url: str("github_url"),
         status: str("status"),
-        deadline: str("deadline") || null,
+        deadline:
+          str("deadline_mode") === "none" ? null : str("deadline") || null,
         researcher_ids: f.getAll("researcher_ids"),
       };
       if (!row.researcher_ids.length)
@@ -621,6 +619,12 @@ $("#editor").addEventListener("submit", async (e) => {
     await persist(table, row, !!id);
     $("#modal").close();
     render();
+    if (type === "ticket")
+      notice(
+        settings.email_enabled !== false
+          ? "Ticket guardado. Los correos dependen de los eventos habilitados; un administrador puede consultar su estado en Notificaciones."
+          : "Ticket guardado. No se envió email: el envío de correos está desactivado. La novedad está disponible en Actividad.",
+      );
   } catch (err) {
     $("#form-error").textContent = err.message;
   } finally {
@@ -629,6 +633,8 @@ $("#editor").addEventListener("submit", async (e) => {
 });
 $("#close-modal").onclick = $("#cancel").onclick = () => $("#modal").close();
 document.addEventListener("click", async (e) => {
+  if (e.target.closest('a[href="#admin/notifications"]') && $("#modal").open)
+    $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
   if (b.id === "google-signin") {
@@ -648,6 +654,10 @@ document.addEventListener("click", async (e) => {
       );
 });
 document.addEventListener("change", async (e) => {
+  if (e.target.id === "deadline-mode") {
+    syncDeadlineFields($("#editor"));
+    return;
+  }
   if (e.target.dataset.paperStatus) {
     try {
       const { error } = await db.rpc("set_paper_status", {
@@ -816,6 +826,7 @@ function notificationsPanel() {
       "Notificaciones por email",
       "Los avisos se envían a los participantes del paper y al responsable del ticket.",
     ) +
+    emailAvailability(settings, true) +
     `<div class="panel"><form id="notification-form"><label><input type="checkbox" name="email_enabled" ${settings.email_enabled ? "checked" : ""}> Habilitar envío de emails</label><p class="hint">Proveedor: Resend. Requiere API key y remitente de un dominio verificado. La clave se almacena en Supabase Vault y nunca se devuelve al navegador.</p>${field("from_email", "Remitente verificado", "email", settings.from_email, "required")}${field("app_url", "Dirección de la aplicación", "url", settings.app_url, "required")}${field("api_key", "Nueva API key de Resend (vacío conserva la actual)", "password", "", 'autocomplete="new-password"')}<h3>Eventos que generan email</h3>${Object.entries(
       labels,
     )
@@ -825,7 +836,7 @@ function notificationsPanel() {
       )
       .join(
         "",
-      )}<p id="notification-result" role="status"></p><button class="button primary">Guardar configuración</button></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Los avisos nuevos se procesan cada minuto.")}</div>`
+      )}<p id="notification-result" role="status"></p><button class="button primary">Guardar configuración</button></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Solo se encolan emails para los eventos habilitados mientras el envío esté activo.")}</div>`
   );
 }
 document.addEventListener("submit", async (e) => {
