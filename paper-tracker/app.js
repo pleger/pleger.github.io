@@ -1,51 +1,901 @@
-import {statuses,initialResearchers,validOrcid,daysUntil,safeUrl} from './domain.js';
-const $=s=>document.querySelector(s), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const config=window.PAPER_TRACKER_CONFIG||{}, remote=!!(config.supabaseUrl&&config.supabaseAnonKey), key='paper-trail-v1';
-let db,user,channel,selected=initialResearchers[0].id, editing, filter='', statusFilter='';
-let state={researchers:structuredClone(initialResearchers),papers:[],tickets:[],activity:[]};
-function notice(s){$('#notice').textContent=s;}
-function full(r){return r?`${r.first_name} ${r.last_name}`:'Sin asignar';}
-function person(id){return state.researchers.find(r=>r.id===id);}
-function me(){return remote?state.researchers.find(r=>r.emails.some(e=>e.toLowerCase()===user?.email?.toLowerCase()))?.id:selected;}
-function badge(s){return `<span class="badge ${esc(s.replaceAll(' ','-'))}">${esc(s)}</span>`;}
-function dateLabel(d){if(!d)return 'Sin fecha';return new Intl.DateTimeFormat('es-CL',{day:'numeric',month:'short'}).format(new Date(d+'T12:00:00'));}
-function due(d){const n=daysUntil(d);return d?`<span class="date ${n<0?'overdue':''}">${esc(dateLabel(d))}${n<0?' · vencido':n===0?' · hoy':''}</span>`:'<span class="date">Sin fecha</span>';}
-function avatars(ids){return `<div class="avatars">${ids.map(id=>{const r=person(id);return r?`<span class="avatar" title="${esc(full(r))}">${esc(r.first_name[0]+r.last_name[0])}</span>`:'';}).join('')}</div>`;}
-function canEdit(){return !remote||!!(user&&me());}
-function requireEdit(){if(!canEdit()){notice('Inicia sesión con un correo registrado por el equipo para realizar cambios.');return false;}return true;}
-async function refresh(){if(!remote)return;const results=await Promise.all(['researchers','papers','tickets','activity'].map(t=>db.from(t).select('*').order('created_at',{ascending:false})));for(let i=0;i<results.length;i++){if(results[i].error)throw results[i].error;state[['researchers','papers','tickets','activity'][i]]=results[i].data;}render();}
-async function persist(table,row,update=false){if(!requireEdit())throw Error('Acceso requerido');if(remote){const {error}=await(update?db.from(table).update(row).eq('id',row.id):db.from(table).insert(row));if(error)throw error;await refresh();}else{if(update)state[table]=state[table].map(x=>x.id===row.id?{...x,...row}:x);else state[table].unshift({...row,created_at:new Date().toISOString()});if(table==='tickets')state.activity.unshift({id:crypto.randomUUID(),paper_id:row.paper_id,message:update?`Ticket actualizado: ${row.title||state.tickets.find(t=>t.id===row.id)?.title}`:`Nuevo ticket: ${row.title}`,created_at:new Date().toISOString(),actor_id:me()});localStorage.setItem(key,JSON.stringify(state));render();}}
-function pageHead(title,sub,action=''){return `<div class="eyebrow">Tu investigación, en movimiento</div><div class="page-heading"><div><h1>${esc(title)}</h1><p class="subtitle">${esc(sub)}</p></div>${action}</div>`;}
-function addButton(type,label){return `<button class="button primary" data-add="${type}">＋ ${label}</button>`;}
-function paperCard(p){const ts=state.tickets.filter(t=>t.paper_id===p.id),done=ts.filter(t=>t.completed).length,progress=ts.length?Math.round(done/ts.length*100):0;return `<article class="paper-card"><div class="card-top"><span class="type">${p.kind==='conference'?'↗ Conferencia':'▤ Revista'}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><p>${esc(p.venue||'Destino por definir')}</p><div class="progress-meta"><span>Tareas completadas</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;}
-function taskRow(t){return `<div class="task-row ${t.completed?'completed':''}"><input type="checkbox" aria-label="Completar ${esc(t.title)}" data-toggle="${t.id}" ${t.completed?'checked':''} ${canEdit()?'':'disabled'}><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find(p=>p.id===t.paper_id)?.title||'Paper')}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description?`<div class="row-sub">${esc(t.description)}</div>`:''}</div>${due(t.deadline)}<button class="button small" data-edit-ticket="${t.id}">Editar</button></div>`;}
-function empty(text){return `<div class="empty">${text}</div>`;}
-function dashboard(){const mine=state.tickets.filter(t=>t.assignee_id===me()&&!t.completed).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));const deadlines=state.papers.filter(p=>p.deadline&&!['aceptado','rechazado'].includes(p.status)).sort((a,b)=>a.deadline.localeCompare(b.deadline));return pageHead('Vista general','Cada paper, cada tarea y cada próximo paso, en un solo lugar.',addButton('paper','Nuevo paper'))+`<div class="stats">${[['Papers en el espacio',state.papers.length,'▤','Proyectos de investigación'],['En desarrollo',state.papers.filter(p=>p.status==='en desarrollo').length,'↗','Ideas que toman forma'],['En revisión',state.papers.filter(p=>p.status==='en revisión').length,'◷','Esperando nuevas noticias'],['Mis tareas pendientes',mine.length,'☑','Tu próximo aporte al equipo']].map(([label,n,icon,sub])=>`<div class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon}</span></div><strong>${n}</strong><small>${sub}</small></div>`).join('')}</div><div class="section-head"><h2>Papers en marcha <span class="badge">${state.papers.length}</span></h2><a href="#papers">Ver todos →</a></div>${state.papers.length?`<div class="paper-grid">${state.papers.slice(0,6).map(paperCard).join('')}</div>`:`<div class="empty large"><h3>El próximo paper empieza aquí</h3><p>Crea un proyecto, reúne a sus autores y define el siguiente paso.</p>${addButton('paper','Crear primer paper')}</div>`}<div class="lower-grid"><section><div class="section-head"><h2>Mis próximos pasos</h2><a href="#tickets">Todos mis tickets →</a></div><div class="panel">${mine.slice(0,5).map(taskRow).join('')||empty('Todo al día. No tienes tareas pendientes.')}</div></section><section><div class="section-head"><h2>Deadlines de envío</h2><span class="eyebrow">AGENDA</span></div><div class="panel">${deadlines.slice(0,5).map(p=>`<div class="deadline-row"><div class="date-tile">${esc(new Intl.DateTimeFormat('es',{month:'short'}).format(new Date(p.deadline+'T12:00:00')))}<strong>${Number(p.deadline.slice(-2))}</strong></div><div class="row-content"><a class="row-title" href="#paper/${p.id}">${esc(p.title)}</a><div class="row-sub">${esc(p.venue||'Conferencia')} · ${due(p.deadline)}</div></div></div>`).join('')||empty('Sin deadlines de envío programados.')}</div></section></div>`;}
-function render(){const route=location.hash.slice(1)||'dashboard',section=route.startsWith('paper/')?'papers':route;document.querySelectorAll('[data-nav]').forEach(a=>a.classList.toggle('active',a.dataset.nav===section));$('#breadcrumb').textContent=`Espacio de investigación / ${{dashboard:'Vista general',papers:'Papers',tickets:'Mis tickets',researchers:'Investigadores',activity:'Actividad'}[section]||'Paper'}`;$('#local-user').hidden=remote;$('#local-user').innerHTML=state.researchers.map(r=>`<option value="${r.id}" ${selected===r.id?'selected':''}>${esc(full(r))}</option>`).join('');let html='';
- if(route==='dashboard')html=dashboard();
- else if(route==='papers')html=pageHead('Nuestros papers','Del primer borrador a la publicación.',addButton('paper','Nuevo paper'))+`<div class="toolbar"><input id="search" placeholder="Buscar un paper…" aria-label="Buscar paper" value="${esc(filter)}"><select id="status-filter" aria-label="Filtrar estado"><option value="">Todos los estados</option>${statuses.map(s=>`<option ${statusFilter===s?'selected':''}>${s}</option>`).join('')}</select></div><div class="paper-grid">${state.papers.filter(p=>p.title.toLowerCase().includes(filter.toLowerCase())&&(!statusFilter||p.status===statusFilter)).map(paperCard).join('')||empty('No hay papers para mostrar.')}</div>`;
- else if(route==='researchers')html=pageHead('Investigadores','Las personas detrás de cada contribución.',addButton('researcher','Agregar investigador'))+`<div class="paper-grid">${state.researchers.map(r=>`<article class="researcher-card">${avatars([r.id])}<h3>${esc(full(r))}</h3><p>${r.emails.map(esc).join('<br>')||'Correo pendiente de registrar'}</p><p><a href="https://orcid.org/${esc(r.orcid)}" target="_blank" rel="noopener noreferrer">ORCID ↗ ${esc(r.orcid)}</a></p><button class="button small" data-edit-researcher="${r.id}">Editar investigador</button></article>`).join('')}</div>`;
- else if(route==='tickets')html=pageHead('Mis tickets','Tu contribución, paso a paso.')+`<div class="panel">${state.tickets.filter(t=>t.assignee_id===me()).sort((a,b)=>Number(a.completed)-Number(b.completed)||(a.deadline||'9999').localeCompare(b.deadline||'9999')).map(taskRow).join('')||empty('No tienes tickets asignados. Puedes crear uno desde un paper.')}</div>`;
- else if(route==='activity'){localStorage.setItem('paper-trail-seen',new Date().toISOString());html=pageHead('Actividad del equipo','Las actualizaciones de tickets se comparten con todo el espacio.')+`<div class="panel">${state.activity.map(a=>`<div class="activity-row"><span class="avatar">↗</span><div class="row-content"><div class="row-title">${esc(a.message)}</div><div class="row-sub">${esc(full(person(a.actor_id)))} · ${esc(new Date(a.created_at).toLocaleString('es-CL'))} ${a.paper_id?`· <a href="#paper/${a.paper_id}">Ver paper →</a>`:''}</div></div></div>`).join('')||empty('Las novedades del equipo aparecerán aquí.')}</div>`;}
- else if(route.startsWith('paper/')){const p=state.papers.find(p=>p.id===route.split('/')[1]);if(!p)html=empty('Paper no encontrado.');else{const ts=state.tickets.filter(t=>t.paper_id===p.id);html=pageHead(p.title,p.venue||'Destino por definir',`<button class="button" data-edit-paper="${p.id}">Editar paper</button>`)+`<div class="panel"><div class="detail-actions">${badge(p.status)}<span class="badge">${p.kind==='conference'?'Conferencia':'Revista'}</span>${due(p.deadline)}${avatars(p.researcher_ids)}${safeUrl(p.github_url)?`<a class="button small" href="${esc(safeUrl(p.github_url))}" target="_blank" rel="noopener noreferrer">Repositorio ↗</a>`:''}</div><p class="detail-description">${esc(p.description||'Agrega una descripción para contextualizar el proyecto.')}</p></div><div class="section-head"><h2>Tickets del paper <span class="badge">${ts.filter(t=>t.completed).length}/${ts.length} completados</span></h2>${addButton('ticket','Nuevo ticket')}</div><div class="panel">${ts.sort((a,b)=>Number(a.completed)-Number(b.completed)).map(taskRow).join('')||empty('Define el siguiente paso para este paper.')}</div><div class="section-head"><h2>Mis tickets en este paper</h2></div><div class="panel">${ts.filter(t=>t.assignee_id===me()&&!t.completed).map(taskRow).join('')||empty('Sin tareas pendientes asignadas a ti.')}</div>`;}}
- else html=empty('Página no encontrada. <a href="#dashboard">Volver al inicio</a>');$('#main').innerHTML=html;const seen=localStorage.getItem('paper-trail-seen')||'';const n=state.activity.filter(a=>a.created_at>seen).length;$('#unread').textContent=n||'';
+import {
+  statuses,
+  validOrcid,
+  daysUntil,
+  safeUrl,
+  signedInResearcher,
+  visibleResearcherId,
+} from "./domain.js";
+const $ = (s) => document.querySelector(s),
+  esc = (v) =>
+    String(v ?? "").replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
+const config = window.PAPER_TRACKER_CONFIG || {},
+  remote = !!(config.supabaseUrl && config.supabaseAnonKey);
+let db,
+  user,
+  channel,
+  timer,
+  selected,
+  editing,
+  filter = "",
+  statusFilter = "",
+  authGeneration = 0;
+let settings = {
+  id: 1,
+  email_enabled: false,
+  paper_created: true,
+  paper_updated: true,
+  ticket_assigned: true,
+  ticket_completed: true,
+  ticket_updated: false,
+  from_email: "",
+  app_url: "https://pleger.github.io/paper-tracker/",
+};
+let outbox = [];
+let googleEnabled = false,
+  unsavedPrefs = false;
+let state = { researchers: [], papers: [], tickets: [], activity: [] };
+function notice(s) {
+  $("#notice").textContent = s;
 }
-function field(name,label,type,value='',extra=''){return `<label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}>`;}
-function options(rows,value){return rows.map(([id,label])=>`<option value="${esc(id)}" ${value===id?'selected':''}>${esc(label)}</option>`).join('');}
-function select(name,label,rows,value){return `<label for="f-${name}">${label}</label><select id="f-${name}" name="${name}">${options(rows,value)}</select>`;}
-function textarea(name,label,value){return `<label for="f-${name}">${label}</label><textarea id="f-${name}" name="${name}">${esc(value||'')}</textarea>`;}
-function openEditor(type,id){if(!requireEdit())return;const table={paper:'papers',ticket:'tickets',researcher:'researchers'}[type],row=state[table].find(x=>x.id===id)||{};editing={type,table,id};$('#dialog-title').textContent=`${id?'Editar':'Agregar'} ${{paper:'paper',ticket:'ticket',researcher:'investigador'}[type]}`;$('#form-error').textContent='';let html='';if(type==='researcher')html=field('first_name','Nombre','text',row.first_name,'required maxlength="100"')+field('last_name','Apellido','text',row.last_name,'required maxlength="100"')+field('emails','Correos (separados por coma)','text',row.emails?.join(', '),'placeholder="nombre@universidad.cl"')+'<p class="hint">Un correo registrado habilita el acceso con Google a todo este espacio.</p>'+field('orcid','ORCID','text',row.orcid,'required placeholder="0000-0000-0000-0000"');
- if(type==='paper')html=field('title','Título del paper','text',row.title,'required maxlength="300"')+textarea('description','Descripción',row.description)+select('kind','Tipo',[['journal','Revista'],['conference','Conferencia']],row.kind||'journal')+field('venue','Conferencia o revista','text',row.venue)+field('github_url','URL del repositorio (HTTPS)','url',row.github_url)+select('status','Estado',statuses.map(s=>[s,s]),row.status||'iniciando')+field('deadline','Deadline de envío (fecha del equipo)','date',row.deadline)+`<label for="f-researcher_ids">Investigadores participantes</label><select id="f-researcher_ids" name="researcher_ids" multiple>${state.researchers.map(r=>`<option value="${r.id}" ${(row.researcher_ids||[me()]).includes(r.id)?'selected':''}>${esc(full(r))}</option>`).join('')}</select><p class="hint">Usa Ctrl/Cmd para seleccionar varias personas. La hora y zona del cierre deben confirmarse con la conferencia.</p>`;
- if(type==='ticket')html=field('title','Tarea o contribución realizada','text',row.title,'required maxlength="300"')+textarea('description','Detalle',row.description)+select('assignee_id','Asignado a',[['','Sin asignar'],...state.researchers.map(r=>[r.id,full(r)])],row.assignee_id||me())+field('deadline','Fecha objetivo','date',row.deadline)+select('completed','Estado',[['false','Pendiente'],['true','Completado']],String(row.completed||false));$('#fields').innerHTML=html;$('#modal').showModal();}
-$('#editor').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.target),{type,table,id}=editing;let row={id:id||crypto.randomUUID()};const str=n=>String(f.get(n)||'').trim();$('#save').disabled=true;try{if(type==='researcher'){row={...row,first_name:str('first_name'),last_name:str('last_name'),emails:str('emails').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean),orcid:str('orcid').replace(/^https:\/\/orcid.org\//,'').toUpperCase()};if(!validOrcid(row.orcid))throw Error('El ORCID no es válido. Revisa sus dígitos.');if(row.emails.some(e=>! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))throw Error('Revisa el formato de los correos.');if(state.researchers.some(r=>r.id!==id&&(r.orcid===row.orcid||r.emails.some(e=>row.emails.includes(e)))))throw Error('Este ORCID o correo ya está registrado.');}
- if(type==='paper'){row={...row,title:str('title'),description:str('description'),kind:str('kind'),venue:str('venue'),github_url:str('github_url'),status:str('status'),deadline:str('deadline')||null,researcher_ids:f.getAll('researcher_ids')};if(row.github_url&&!safeUrl(row.github_url))throw Error('El repositorio debe usar una URL HTTPS.');}
- if(type==='ticket')row={...row,paper_id:id?state.tickets.find(t=>t.id===id).paper_id:location.hash.split('/')[1],title:str('title'),description:str('description'),assignee_id:str('assignee_id')||null,deadline:str('deadline')||null,completed:str('completed')==='true'};
- await persist(table,row,!!id);$('#modal').close();}catch(err){$('#form-error').textContent=err.message;}finally{$('#save').disabled=false;}});
-$('#close-modal').onclick=$('#cancel').onclick=()=>$('#modal').close();
-document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.add)openEditor(b.dataset.add);for(const type of ['paper','ticket','researcher'])if(b.dataset['edit'+type[0].toUpperCase()+type.slice(1)])openEditor(type,b.dataset['edit'+type[0].toUpperCase()+type.slice(1)]);});
-document.addEventListener('change',async e=>{if(e.target.dataset.toggle){const t=state.tickets.find(t=>t.id===e.target.dataset.toggle);e.target.disabled=true;try{await persist('tickets',{...t,completed:e.target.checked},true);}catch(err){notice(err.message);render();}}if(e.target.id==='status-filter'){statusFilter=e.target.value;render();}});
-document.addEventListener('input',e=>{if(e.target.id==='search'){const pos=e.target.selectionStart;filter=e.target.value;render();$('#search').focus();$('#search').setSelectionRange(pos,pos);}});
-$('#local-user').onchange=e=>{selected=e.target.value;render();};window.addEventListener('hashchange',render);
-$('#login').onclick=async()=>{if(!remote){notice('Google requiere configurar Supabase. Consulta README.md. Los datos de prueba solo se guardan en este navegador.');return;}try{if(user){await db.auth.signOut();location.reload();}else{const {error}=await db.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname}});if(error)throw error;}}catch(err){notice(err.message);}};
-async function start(){if(!remote){try{const saved=localStorage.getItem(key);if(saved)state=JSON.parse(saved);}catch{notice('No se pudieron recuperar los datos locales.');}notice('Modo local de prueba: datos guardados en este navegador. Configura Supabase para colaborar y usar Google.');render();return;}$('#connection').textContent='Conectado a Supabase';try{const {createClient}=await import('https://esm.sh/@supabase/supabase-js@2');db=createClient(config.supabaseUrl,config.supabaseAnonKey);const {data,error}=await db.auth.getSession();if(error)throw error;user=data.session?.user;db.auth.onAuthStateChange((event,session)=>{user=session?.user;$('#login').textContent=user?'Cerrar sesión':'Continuar con Google';if(event==='TOKEN_REFRESHED')return;setTimeout(()=>refresh().catch(err=>notice(err.message)),0);});if(user){await refresh();if(!me())notice('Tu correo no está registrado en este espacio. Solicita a un integrante que lo agregue.');channel=db.channel('team-updates').on('postgres_changes',{event:'*',schema:'public',table:'activity'},()=>refresh().catch(err=>notice(err.message))).subscribe();setInterval(()=>refresh().catch(err=>notice(err.message)),30000);}else{state={researchers:[],papers:[],tickets:[],activity:[]};notice('Inicia sesión con Google para acceder al espacio privado del equipo.');}$('#login').textContent=user?'Cerrar sesión':'Continuar con Google';render();}catch(err){notice(`No fue posible conectar: ${err.message}`);state={researchers:[],papers:[],tickets:[],activity:[]};render();}}
+function full(r) {
+  return r ? `${r.first_name} ${r.last_name}` : "Sin asignar";
+}
+function person(id) {
+  return state.researchers.find((r) => r.id === id);
+}
+function actual() {
+  return signedInResearcher(state.researchers, user);
+}
+function admin() {
+  return !!actual()?.is_admin;
+}
+function me() {
+  return visibleResearcherId(state.researchers, user, selected);
+}
+function canWork(paperId) {
+  return (
+    canEdit() &&
+    (admin() ||
+      state.papers
+        .find((p) => p.id === paperId)
+        ?.researcher_ids.includes(actual().id))
+  );
+}
+function activeResearchers() {
+  return state.researchers.filter((r) => !r.deleted_at);
+}
+function requireAdmin() {
+  if (!admin()) {
+    notice("Esta opción requiere permisos de administrador.");
+    return false;
+  }
+  return true;
+}
+function badge(s) {
+  return `<span class="badge ${esc(s.replaceAll(" ", "-"))}">${esc(s)}</span>`;
+}
+function dateLabel(d) {
+  if (!d) return "Sin fecha";
+  return new Intl.DateTimeFormat("es-CL", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(d + "T12:00:00"));
+}
+function due(d) {
+  const n = daysUntil(d);
+  return d
+    ? `<span class="date ${n < 0 ? "overdue" : ""}">${esc(dateLabel(d))}${n < 0 ? " · vencido" : n === 0 ? " · hoy" : ""}</span>`
+    : '<span class="date">Sin fecha</span>';
+}
+function avatars(ids) {
+  return `<div class="avatars">${ids
+    .map((id) => {
+      const r = person(id);
+      return r
+        ? `<span class="avatar" title="${esc(full(r))}">${esc(r.first_name[0] + r.last_name[0])}</span>`
+        : "";
+    })
+    .join("")}</div>`;
+}
+function canEdit() {
+  return remote && !!actual();
+}
+function requireEdit() {
+  if (!canEdit()) {
+    notice(
+      "Inicia sesión con un correo registrado por el equipo para realizar cambios.",
+    );
+    return false;
+  }
+  return true;
+}
+async function refresh() {
+  if (!db || !user) return;
+  const generation = authGeneration;
+  const names = ["researchers", "papers", "tickets", "activity"];
+  const results = await Promise.all(
+    names.map((t) =>
+      db.from(t).select("*").order("created_at", { ascending: false }),
+    ),
+  );
+  if (generation !== authGeneration) return;
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].error) throw results[i].error;
+    state[names[i]] = results[i].data;
+  }
+  if (admin()) {
+    const [prefs, queue] = await Promise.all([
+      db.from("notification_settings").select("*").eq("id", 1).single(),
+      db
+        .from("notification_outbox")
+        .select("id,status,attempts,last_error,created_at")
+        .order("created_at", { ascending: false })
+        .limit(20),
+    ]);
+    if (generation !== authGeneration) return;
+    if (prefs.error) throw prefs.error;
+    if (queue.error) throw queue.error;
+    settings = prefs.data;
+    outbox = queue.data;
+  }
+  if (!actual() || (!$("#modal").open && !unsavedPrefs)) render();
+}
+async function persist(table, row, update = false) {
+  if (!requireEdit()) throw Error("Acceso requerido");
+  if (table === "researchers" && !requireAdmin())
+    throw Error("Permisos de administrador requeridos");
+  if (table === "papers" && update && !requireAdmin())
+    throw Error("La configuración de papers requiere un administrador");
+  const payload = { ...row };
+  if (update) {
+    delete payload.id;
+    delete payload.created_at;
+    if (table === "tickets") delete payload.paper_id;
+  }
+  const { error } = await (update
+    ? db.from(table).update(payload).eq("id", row.id)
+    : db.from(table).insert(payload));
+  if (error) throw error;
+  await refresh();
+}
+function pageHead(title, sub, action = "") {
+  return `<div class="eyebrow">Tu investigación, en movimiento</div><div class="page-heading"><div><h1>${esc(title)}</h1><p class="subtitle">${esc(sub)}</p></div>${action}</div>`;
+}
+function addButton(type, label) {
+  return `<button class="button primary" data-add="${type}">＋ ${label}</button>`;
+}
+function paperCard(p) {
+  const ts = state.tickets.filter((t) => t.paper_id === p.id),
+    done = ts.filter((t) => t.completed).length,
+    progress = ts.length ? Math.round((done / ts.length) * 100) : 0;
+  return `<article class="paper-card"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conferencia" : "▤ Revista"}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><p>${esc(p.venue || "Destino por definir")}</p><div class="progress-meta"><span>Tareas completadas</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
+}
+function taskRow(t) {
+  return `<div class="task-row ${t.completed ? "completed" : ""}"><input type="checkbox" aria-label="Completar ${esc(t.title)}" data-toggle="${t.id}" ${t.completed ? "checked" : ""} ${canWork(t.paper_id) ? "" : "disabled"}><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Editar</button>` : ""}</div>`;
+}
+function empty(text) {
+  return `<div class="empty">${text}</div>`;
+}
+function dashboard() {
+  const mine = state.tickets
+    .filter((t) => t.assignee_id === me() && !t.completed)
+    .sort((a, b) => (a.deadline || "9999").localeCompare(b.deadline || "9999"));
+  const deadlines = state.papers
+    .filter((p) => p.deadline && !["aceptado", "rechazado"].includes(p.status))
+    .sort((a, b) => a.deadline.localeCompare(b.deadline));
+  return (
+    pageHead(
+      "Vista general",
+      "Cada paper, cada tarea y cada próximo paso, en un solo lugar.",
+      addButton("paper", "Nuevo paper"),
+    ) +
+    `<div class="stats">${[
+      [
+        "Papers en el espacio",
+        state.papers.length,
+        "▤",
+        "Proyectos de investigación",
+      ],
+      [
+        "En desarrollo",
+        state.papers.filter((p) => p.status === "en desarrollo").length,
+        "↗",
+        "Ideas que toman forma",
+      ],
+      [
+        "En revisión",
+        state.papers.filter((p) => p.status === "en revisión").length,
+        "◷",
+        "Esperando nuevas noticias",
+      ],
+      [
+        "Mis tareas pendientes",
+        mine.length,
+        "☑",
+        "Tu próximo aporte al equipo",
+      ],
+    ]
+      .map(
+        ([label, n, icon, sub]) =>
+          `<div class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon}</span></div><strong>${n}</strong><small>${sub}</small></div>`,
+      )
+      .join(
+        "",
+      )}</div><div class="section-head"><h2>Papers en marcha <span class="badge">${state.papers.length}</span></h2><a href="#papers">Ver todos →</a></div>${state.papers.length ? `<div class="paper-grid">${state.papers.slice(0, 6).map(paperCard).join("")}</div>` : `<div class="empty large"><h3>El próximo paper empieza aquí</h3><p>Crea un proyecto, reúne a sus autores y define el siguiente paso.</p>${addButton("paper", "Crear primer paper")}</div>`}<div class="lower-grid"><section><div class="section-head"><h2>Mis próximos pasos</h2><a href="#tickets">Todos mis tickets →</a></div><div class="panel">${mine.slice(0, 5).map(taskRow).join("") || empty("Todo al día. No tienes tareas pendientes.")}</div></section><section><div class="section-head"><h2>Deadlines de envío</h2><span class="eyebrow">AGENDA</span></div><div class="panel">${
+      deadlines
+        .slice(0, 5)
+        .map(
+          (p) =>
+            `<div class="deadline-row"><div class="date-tile">${esc(new Intl.DateTimeFormat("es", { month: "short" }).format(new Date(p.deadline + "T12:00:00")))}<strong>${Number(p.deadline.slice(-2))}</strong></div><div class="row-content"><a class="row-title" href="#paper/${p.id}">${esc(p.title)}</a><div class="row-sub">${esc(p.venue || "Conferencia")} · ${due(p.deadline)}</div></div></div>`,
+        )
+        .join("") || empty("Sin deadlines de envío programados.")
+    }</div></section></div>`
+  );
+}
+function render() {
+  const route = location.hash.slice(1) || "dashboard",
+    section = route.startsWith("paper/") ? "papers" : route;
+  const signed = canEdit();
+  $(".sidebar nav").hidden = !signed;
+  $("#admin-menu").hidden = !admin();
+  $("#identity").textContent = actual() ? full(actual()) : "";
+  $("#login").textContent = user ? "Cerrar sesión" : "Continuar con Google";
+  $("#view-user").innerHTML =
+    '<option value="">Mi propia vista</option>' +
+    activeResearchers()
+      .map(
+        (r) =>
+          `<option value="${r.id}" ${selected === r.id ? "selected" : ""}>${esc(full(r))}</option>`,
+      )
+      .join("");
+  document
+    .querySelectorAll("[data-nav]")
+    .forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
+  $("#breadcrumb").textContent =
+    "Espacio de investigación / " +
+    ({
+      dashboard: "Vista general",
+      papers: "Papers",
+      tickets: "Mis tickets",
+      researchers: "Investigadores",
+      activity: "Actividad",
+    }[section] || "Administración");
+  if (!signed) {
+    $("#unread").textContent = "";
+    $("#main").innerHTML =
+      `<section class="login-panel"><div class="eyebrow">INVESTIGACIÓN COMPARTIDA</div><h1>Bienvenido a Paper Trail</h1><p>Inicia sesión con tu cuenta Google registrada para acceder a los papers y tareas del equipo.</p>${!remote ? '<p class="setup-message">Estamos preparando el acceso privado. La configuración del servicio de autenticación aún está pendiente.</p>' : user ? '<p class="setup-message">Tu cuenta no está registrada o fue desactivada. Contacta a un administrador.</p>' : '<button class="button primary" id="google-signin">Continuar con Google</button>'}</section>`;
+    return;
+  }
+  if (route.startsWith("admin/") && !admin()) {
+    $("#main").innerHTML = empty(
+      "Solo los administradores pueden acceder a esta sección.",
+    );
+    return;
+  }
+  let html = "";
+  if (route === "dashboard") html = dashboard();
+  else if (route === "admin/papers")
+    html =
+      pageHead(
+        "Configuración de papers",
+        "Edita participantes, destino, estado editorial, repositorio y fechas.",
+      ) +
+      `<div class="panel">${state.papers.map((p) => `<div class="person-row"><div class="row-content"><a href="#paper/${p.id}" class="row-title">${esc(p.title)}</a><div class="row-sub">${esc(p.venue)} · ${esc(p.status)} · ${p.researcher_ids.length} participantes</div></div><button class="button small" data-edit-paper="${p.id}">Configurar</button></div>`).join("") || empty("Aún no hay papers para configurar.")}</div>`;
+  else if (route === "admin/notifications") html = notificationsPanel();
+  else if (route === "papers")
+    html =
+      pageHead(
+        "Nuestros papers",
+        "Del primer borrador a la publicación.",
+        addButton("paper", "Nuevo paper"),
+      ) +
+      `<div class="toolbar"><input id="search" placeholder="Buscar un paper…" aria-label="Buscar paper" value="${esc(filter)}"><select id="status-filter" aria-label="Filtrar estado"><option value="">Todos los estados</option>${statuses.map((s) => `<option ${statusFilter === s ? "selected" : ""}>${s}</option>`).join("")}</select></div><div class="paper-grid">${
+        state.papers
+          .filter(
+            (p) =>
+              p.title.toLowerCase().includes(filter.toLowerCase()) &&
+              (!statusFilter || p.status === statusFilter),
+          )
+          .map(paperCard)
+          .join("") || empty("No hay papers para mostrar.")
+      }</div>`;
+  else if (route === "researchers" || route === "admin/researchers")
+    html =
+      pageHead(
+        "Investigadores",
+        "Las personas detrás de cada contribución.",
+        route.startsWith("admin/")
+          ? addButton("researcher", "Agregar investigador")
+          : "",
+      ) +
+      `<div class="paper-grid">${activeResearchers()
+        .map(
+          (r) =>
+            `<article class="researcher-card">${avatars([r.id])}<h3>${esc(full(r))}</h3><p>${r.emails.map(esc).join("<br>") || "Correo pendiente de registrar"}</p><p><a href="https://orcid.org/${esc(r.orcid)}" target="_blank" rel="noopener noreferrer">ORCID ↗ ${esc(r.orcid)}</a></p>${r.is_admin ? '<span class="badge">Administrador</span>' : ""}${route.startsWith("admin/") ? `<div class="detail-actions"><button class="button small" data-edit-researcher="${r.id}">Editar y permisos</button><button class="button small danger" data-delete-researcher="${r.id}">Eliminar</button></div>` : ""}</article>`,
+        )
+        .join("")}</div>`;
+  else if (route === "tickets")
+    html =
+      pageHead("Mis tickets", "Tu contribución, paso a paso.") +
+      `<div class="panel">${
+        state.tickets
+          .filter((t) => t.assignee_id === me())
+          .sort(
+            (a, b) =>
+              Number(a.completed) - Number(b.completed) ||
+              (a.deadline || "9999").localeCompare(b.deadline || "9999"),
+          )
+          .map(taskRow)
+          .join("") ||
+        empty("No tienes tickets asignados. Puedes crear uno desde un paper.")
+      }</div>`;
+  else if (route === "activity") {
+    localStorage.setItem("paper-trail-seen", new Date().toISOString());
+    html =
+      pageHead(
+        "Actividad del equipo",
+        "Las actualizaciones de tickets se comparten con todo el espacio.",
+      ) +
+      `<div class="panel">${state.activity.map((a) => `<div class="activity-row"><span class="avatar">↗</span><div class="row-content"><div class="row-title">${esc(a.message)}</div><div class="row-sub">${esc(full(person(a.actor_id)))} · ${esc(new Date(a.created_at).toLocaleString("es-CL"))} ${a.paper_id ? `· <a href="#paper/${a.paper_id}">Ver paper →</a>` : ""}</div></div></div>`).join("") || empty("Las novedades del equipo aparecerán aquí.")}</div>`;
+  } else if (route.startsWith("paper/")) {
+    const p = state.papers.find((p) => p.id === route.split("/")[1]);
+    if (!p) html = empty("Paper no encontrado.");
+    else {
+      const ts = state.tickets.filter((t) => t.paper_id === p.id);
+      html =
+        pageHead(p.title, p.venue || "Destino por definir", "") +
+        `<div class="panel"><div class="detail-actions">${badge(p.status)}${
+          admin() || p.researcher_ids.includes(actual().id)
+            ? `<label class="status-control">Cambiar estado <select data-paper-status="${p.id}">${options(
+                statuses.map((s) => [s, s]),
+                p.status,
+              )}</select></label>`
+            : ""
+        }<span class="badge">${p.kind === "conference" ? "Conferencia" : "Revista"}</span>${due(p.deadline)}${avatars(p.researcher_ids)}${safeUrl(p.github_url) ? `<a class="button small" href="${esc(safeUrl(p.github_url))}" target="_blank" rel="noopener noreferrer">Repositorio ↗</a>` : ""}</div><p class="detail-description">${esc(p.description || "Agrega una descripción para contextualizar el proyecto.")}</p></div><div class="section-head"><h2>Tickets del paper <span class="badge">${ts.filter((t) => t.completed).length}/${ts.length} completados</span></h2>${canWork(p.id) ? addButton("ticket", "Nuevo ticket") : ""}</div><div class="panel">${
+          ts
+            .sort((a, b) => Number(a.completed) - Number(b.completed))
+            .map(taskRow)
+            .join("") || empty("Define el siguiente paso para este paper.")
+        }</div><div class="section-head"><h2>Mis tickets en este paper</h2></div><div class="panel">${
+          ts
+            .filter((t) => t.assignee_id === me() && !t.completed)
+            .map(taskRow)
+            .join("") || empty("Sin tareas pendientes asignadas a ti.")
+        }</div>`;
+    }
+  } else
+    html = empty(
+      'Página no encontrada. <a href="#dashboard">Volver al inicio</a>',
+    );
+  $("#main").innerHTML =
+    (admin() && selected && selected !== actual().id
+      ? `<div class="view-banner">Vista de tareas de ${esc(full(person(selected)))}. Las acciones se registran como ${esc(full(actual()))}.</div>`
+      : "") + html;
+  const seen = localStorage.getItem("paper-trail-seen") || "";
+  const n = state.activity.filter((a) => a.created_at > seen).length;
+  $("#unread").textContent = n || "";
+}
+function field(name, label, type, value = "", extra = "") {
+  return `<label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}>`;
+}
+function options(rows, value) {
+  return rows
+    .map(
+      ([id, label]) =>
+        `<option value="${esc(id)}" ${value === id ? "selected" : ""}>${esc(label)}</option>`,
+    )
+    .join("");
+}
+function select(name, label, rows, value) {
+  return `<label for="f-${name}">${label}</label><select id="f-${name}" name="${name}">${options(rows, value)}</select>`;
+}
+function textarea(name, label, value) {
+  return `<label for="f-${name}">${label}</label><textarea id="f-${name}" name="${name}">${esc(value || "")}</textarea>`;
+}
+function openEditor(type, id) {
+  if (!requireEdit()) return;
+  if ((type === "researcher" || (type === "paper" && id)) && !requireAdmin())
+    return;
+  const table = {
+      paper: "papers",
+      ticket: "tickets",
+      researcher: "researchers",
+    }[type],
+    row = state[table].find((x) => x.id === id) || {};
+  if (
+    type === "ticket" &&
+    !canWork(row.paper_id || location.hash.split("/")[1])
+  ) {
+    notice("Debes participar en este paper para modificar tickets.");
+    return;
+  }
+  editing = { type, table, id };
+  $("#dialog-title").textContent =
+    `${id ? "Editar" : "Agregar"} ${{ paper: "paper", ticket: "ticket", researcher: "investigador" }[type]}`;
+  $("#form-error").textContent = "";
+  let html = "";
+  if (type === "researcher")
+    html =
+      field(
+        "first_name",
+        "Nombre",
+        "text",
+        row.first_name,
+        'required maxlength="100"',
+      ) +
+      field(
+        "last_name",
+        "Apellido",
+        "text",
+        row.last_name,
+        'required maxlength="100"',
+      ) +
+      field(
+        "emails",
+        "Correos (separados por coma)",
+        "text",
+        row.emails?.join(", "),
+        'placeholder="nombre@universidad.cl"',
+      ) +
+      '<p class="hint">Un correo registrado habilita el acceso con Google a todo este espacio.</p>' +
+      field(
+        "orcid",
+        "ORCID",
+        "text",
+        row.orcid,
+        'required placeholder="0000-0000-0000-0000"',
+      ) +
+      select(
+        "is_admin",
+        "Permisos",
+        [
+          ["false", "Investigador"],
+          ["true", "Administrador"],
+        ],
+        String(row.is_admin || false),
+      );
+  if (type === "paper")
+    html =
+      field(
+        "title",
+        "Título del paper",
+        "text",
+        row.title,
+        'required maxlength="300"',
+      ) +
+      textarea("description", "Descripción", row.description) +
+      select(
+        "kind",
+        "Tipo",
+        [
+          ["journal", "Revista"],
+          ["conference", "Conferencia"],
+        ],
+        row.kind || "journal",
+      ) +
+      field("venue", "Conferencia o revista", "text", row.venue) +
+      field(
+        "github_url",
+        "URL del repositorio (HTTPS)",
+        "url",
+        row.github_url,
+      ) +
+      select(
+        "status",
+        "Estado",
+        statuses.map((s) => [s, s]),
+        row.status || "iniciando",
+      ) +
+      field(
+        "deadline",
+        "Deadline de envío (fecha del equipo)",
+        "date",
+        row.deadline,
+      ) +
+      `<label for="f-researcher_ids">Investigadores participantes</label><select id="f-researcher_ids" name="researcher_ids" multiple>${activeResearchers()
+        .map(
+          (r) =>
+            `<option value="${r.id}" ${(row.researcher_ids || [actual().id]).includes(r.id) ? "selected" : ""}>${esc(full(r))}</option>`,
+        )
+        .join(
+          "",
+        )}</select><p class="hint">Usa Ctrl/Cmd para seleccionar varias personas. La hora y zona del cierre deben confirmarse con la conferencia.</p>`;
+  if (type === "ticket")
+    html =
+      field(
+        "title",
+        "Tarea o contribución realizada",
+        "text",
+        row.title,
+        'required maxlength="300"',
+      ) +
+      textarea("description", "Detalle", row.description) +
+      select(
+        "assignee_id",
+        "Asignado a",
+        [
+          ["", "Sin asignar"],
+          ...activeResearchers()
+            .filter((r) =>
+              state.papers
+                .find(
+                  (p) => p.id === (row.paper_id || location.hash.split("/")[1]),
+                )
+                ?.researcher_ids.includes(r.id),
+            )
+            .map((r) => [r.id, full(r)]),
+        ],
+        row.assignee_id || me(),
+      ) +
+      field("deadline", "Fecha objetivo", "date", row.deadline) +
+      select(
+        "completed",
+        "Estado",
+        [
+          ["false", "Pendiente"],
+          ["true", "Completado"],
+        ],
+        String(row.completed || false),
+      );
+  $("#fields").innerHTML = html;
+  $("#modal").showModal();
+}
+$("#editor").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target),
+    { type, table, id } = editing;
+  let row = { id: id || crypto.randomUUID() };
+  const str = (n) => String(f.get(n) || "").trim();
+  $("#save").disabled = true;
+  try {
+    if (type === "researcher") {
+      row = {
+        ...row,
+        first_name: str("first_name"),
+        last_name: str("last_name"),
+        emails: str("emails")
+          .split(",")
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean),
+        is_admin: str("is_admin") === "true",
+        orcid: str("orcid")
+          .replace(/^https:\/\/orcid.org\//, "")
+          .toUpperCase(),
+      };
+      if (!validOrcid(row.orcid))
+        throw Error("El ORCID no es válido. Revisa sus dígitos.");
+      if (row.emails.some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))
+        throw Error("Revisa el formato de los correos.");
+      if (
+        activeResearchers().some(
+          (r) =>
+            r.id !== id &&
+            (r.orcid === row.orcid ||
+              r.emails.some((e) => row.emails.includes(e))),
+        )
+      )
+        throw Error("Este ORCID o correo ya está registrado.");
+    }
+    if (type === "paper") {
+      row = {
+        ...row,
+        title: str("title"),
+        description: str("description"),
+        kind: str("kind"),
+        venue: str("venue"),
+        github_url: str("github_url"),
+        status: str("status"),
+        deadline: str("deadline") || null,
+        researcher_ids: f.getAll("researcher_ids"),
+      };
+      if (!row.researcher_ids.length)
+        throw Error("Selecciona al menos un investigador.");
+      if (!admin() && !row.researcher_ids.includes(actual().id))
+        throw Error("Debes incluirte como participante del paper.");
+      if (row.github_url && !safeUrl(row.github_url))
+        throw Error("El repositorio debe usar una URL HTTPS.");
+    }
+    if (type === "ticket")
+      row = {
+        ...row,
+        paper_id: id
+          ? state.tickets.find((t) => t.id === id).paper_id
+          : location.hash.split("/")[1],
+        title: str("title"),
+        description: str("description"),
+        assignee_id: str("assignee_id") || null,
+        deadline: str("deadline") || null,
+        completed: str("completed") === "true",
+      };
+    await persist(table, row, !!id);
+    $("#modal").close();
+    render();
+  } catch (err) {
+    $("#form-error").textContent = err.message;
+  } finally {
+    $("#save").disabled = false;
+  }
+});
+$("#close-modal").onclick = $("#cancel").onclick = () => $("#modal").close();
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.id === "google-signin") {
+    $("#login").click();
+    return;
+  }
+  if (b.dataset.deleteResearcher) {
+    openDeleteResearcher(b.dataset.deleteResearcher);
+    return;
+  }
+  if (b.dataset.add) openEditor(b.dataset.add);
+  for (const type of ["paper", "ticket", "researcher"])
+    if (b.dataset["edit" + type[0].toUpperCase() + type.slice(1)])
+      openEditor(
+        type,
+        b.dataset["edit" + type[0].toUpperCase() + type.slice(1)],
+      );
+});
+document.addEventListener("change", async (e) => {
+  if (e.target.dataset.paperStatus) {
+    try {
+      const { error } = await db.rpc("set_paper_status", {
+        paper: e.target.dataset.paperStatus,
+        new_status: e.target.value,
+      });
+      if (error) throw error;
+      await refresh();
+    } catch (err) {
+      notice(err.message);
+      render();
+    }
+    return;
+  }
+  if (e.target.dataset.toggle) {
+    const t = state.tickets.find((t) => t.id === e.target.dataset.toggle);
+    e.target.disabled = true;
+    try {
+      await persist("tickets", { ...t, completed: e.target.checked }, true);
+    } catch (err) {
+      notice(err.message);
+      render();
+    }
+  }
+  if (e.target.id === "status-filter") {
+    statusFilter = e.target.value;
+    render();
+  }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "search") {
+    const pos = e.target.selectionStart;
+    filter = e.target.value;
+    render();
+    $("#search").focus();
+    $("#search").setSelectionRange(pos, pos);
+  }
+});
+$("#view-user").onchange = (e) => {
+  if (!requireAdmin()) return;
+  selected = e.target.value || undefined;
+  render();
+};
+window.addEventListener("hashchange", render);
+$("#login").onclick = async () => {
+  if (!remote) {
+    notice(
+      "El acceso Google estará disponible cuando se complete la configuración de Supabase.",
+    );
+    return;
+  }
+  try {
+    if (user) {
+      const { error } = await db.auth.signOut();
+      if (error) throw error;
+      await syncSession(null);
+    } else {
+      if (!googleEnabled) {
+        notice(
+          "El proveedor Google aún está pendiente de configurar en Supabase.",
+        );
+        return;
+      }
+      const { error } = await db.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: location.origin + location.pathname,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+      if (error) throw error;
+    }
+  } catch (err) {
+    notice(err.message);
+  }
+};
+async function syncSession(session) {
+  authGeneration++;
+  if ($("#modal").open) $("#modal").close();
+  unsavedPrefs = false;
+  user = session?.user;
+  selected = undefined;
+  if (channel) {
+    await db.removeChannel(channel);
+    channel = null;
+  }
+  clearInterval(timer);
+  state = { researchers: [], papers: [], tickets: [], activity: [] };
+  outbox = [];
+  render();
+  if (!user) return;
+  try {
+    await refresh();
+    if (!actual()) {
+      notice(
+        "Este correo no está registrado o está desactivado. Solicita acceso a un administrador.",
+      );
+      return;
+    }
+    notice("");
+    channel = db
+      .channel("team-updates")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "activity" },
+        () => refresh().catch((err) => notice(err.message)),
+      )
+      .subscribe();
+    timer = setInterval(
+      () => refresh().catch((err) => notice(err.message)),
+      30000,
+    );
+  } catch (err) {
+    notice(`No fue posible cargar el espacio privado: ${err.message}`);
+  }
+}
+async function start() {
+  render();
+  if (!remote) {
+    notice(
+      "Acceso privado pendiente de configuración. El modo local y el selector de identidad fueron deshabilitados.",
+    );
+    return;
+  }
+  try {
+    const { createClient } =
+      await import("https://esm.sh/@supabase/supabase-js@2");
+    db = createClient(config.supabaseUrl, config.supabaseAnonKey);
+    const response = await fetch(config.supabaseUrl + "/auth/v1/settings", {
+      headers: { apikey: config.supabaseAnonKey },
+    });
+    if (response.ok) {
+      const authSettings = await response.json();
+      googleEnabled = !!authSettings.external?.google;
+    }
+
+    $("#connection").textContent = "Espacio privado · Supabase";
+    db.auth.onAuthStateChange((event, session) => {
+      if (event !== "INITIAL_SESSION" && event !== "TOKEN_REFRESHED")
+        setTimeout(() => syncSession(session), 0);
+    });
+    const { data, error } = await db.auth.getSession();
+    if (error) throw error;
+    await syncSession(data.session);
+  } catch (err) {
+    notice(`No fue posible conectar: ${err.message}`);
+  }
+}
+document.addEventListener("input", (e) => {
+  if (e.target.closest("#notification-form")) unsavedPrefs = true;
+});
+function notificationsPanel() {
+  const labels = {
+    paper_created: "Nuevo paper",
+    paper_updated: "Cambios y estados de un paper",
+    ticket_assigned: "Ticket asignado o reasignado",
+    ticket_completed: "Tarea completada o reabierta",
+    ticket_updated: "Otros cambios de tickets",
+  };
+  return (
+    pageHead(
+      "Notificaciones por email",
+      "Los avisos se envían a los participantes del paper y al responsable del ticket.",
+    ) +
+    `<div class="panel"><form id="notification-form"><label><input type="checkbox" name="email_enabled" ${settings.email_enabled ? "checked" : ""}> Habilitar envío de emails</label><p class="hint">Proveedor: Resend. Requiere API key y remitente de un dominio verificado. La clave se almacena en Supabase Vault y nunca se devuelve al navegador.</p>${field("from_email", "Remitente verificado", "email", settings.from_email, "required")}${field("app_url", "Dirección de la aplicación", "url", settings.app_url, "required")}${field("api_key", "Nueva API key de Resend (vacío conserva la actual)", "password", "", 'autocomplete="new-password"')}<h3>Eventos que generan email</h3>${Object.entries(
+      labels,
+    )
+      .map(
+        ([k, label]) =>
+          `<label><input type="checkbox" name="${k}" ${settings[k] ? "checked" : ""}> ${label}</label>`,
+      )
+      .join(
+        "",
+      )}<p id="notification-result" role="status"></p><button class="button primary">Guardar configuración</button></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Los avisos nuevos se procesan cada minuto.")}</div>`
+  );
+}
+document.addEventListener("submit", async (e) => {
+  if (e.target.id !== "notification-form") return;
+  e.preventDefault();
+  if (!requireAdmin()) return;
+  const button = e.target.querySelector("button"),
+    result = $("#notification-result"),
+    f = new FormData(e.target);
+  button.disabled = true;
+  try {
+    const row = {
+      ...settings,
+      from_email: String(f.get("from_email")).trim(),
+      app_url: String(f.get("app_url")).trim(),
+    };
+    if (!safeUrl(row.app_url))
+      throw Error("La dirección de la aplicación debe usar HTTPS.");
+    for (const k of [
+      "email_enabled",
+      "paper_created",
+      "paper_updated",
+      "ticket_assigned",
+      "ticket_completed",
+      "ticket_updated",
+    ])
+      row[k] = f.has(k);
+    const apiKey = String(f.get("api_key") || "").trim();
+    if (apiKey) {
+      const { error } = await db.rpc("configure_email_secret", {
+        api_key: apiKey,
+      });
+      if (error) throw error;
+      e.target.elements.api_key.value = "";
+    }
+    const { error } = await db
+      .from("notification_settings")
+      .update(row)
+      .eq("id", 1);
+    if (error) throw error;
+    unsavedPrefs = false;
+    await refresh();
+    $("#notification-result").textContent =
+      "Configuración guardada. Los eventos nuevos usarán estas preferencias.";
+  } catch (err) {
+    result.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+function openDeleteResearcher(id) {
+  if (!requireAdmin()) return;
+  const r = person(id);
+  $("#dialog-title").textContent = "Eliminar investigador";
+  $("#fields").innerHTML =
+    `<p>Se desactivará el acceso de ${esc(full(r))}, se quitará su participación en los papers y sus tickets quedarán sin asignar. La actividad histórica se conserva.</p><button type="button" class="button danger" id="confirm-delete">Eliminar investigador</button>`;
+  $("#form-error").textContent = "";
+  $(".form-actions").hidden = true;
+  $("#modal").showModal();
+  $("#confirm-delete").onclick = async () => {
+    try {
+      const { error } = await db.rpc("deactivate_researcher", {
+        researcher: id,
+      });
+      if (error) throw error;
+      $("#modal").close();
+      await refresh();
+    } catch (err) {
+      $("#form-error").textContent = err.message;
+    }
+  };
+}
+$("#modal").addEventListener("close", () => {
+  $(".form-actions").hidden = false;
+  editing = null;
+});
 start();
