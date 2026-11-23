@@ -40,6 +40,7 @@ let db,
 let settings = {
   id: 1,
   email_enabled: null,
+  provider: "resend",
   paper_created: true,
   paper_updated: true,
   ticket_assigned: true,
@@ -813,6 +814,46 @@ async function start() {
 document.addEventListener("input", (e) => {
   if (e.target.closest("#notification-form")) unsavedPrefs = true;
 });
+function emailProviderHelp(provider) {
+  return provider === "gmail"
+    ? "Envía desde tu cuenta @gmail.com. Activa la verificación en dos pasos de Google y genera una contraseña de aplicación de 16 caracteres. Se guarda cifrada en Supabase Vault."
+    : "Resend requiere una API key y un remitente de un dominio verificado. La clave se guarda cifrada en Supabase Vault.";
+}
+function emailSecretLabel(provider) {
+  return provider === "gmail"
+    ? "Nueva contraseña de aplicación de Gmail (16 caracteres)"
+    : "Nueva API key de Resend";
+}
+document.addEventListener("change", (e) => {
+  if (e.target.id !== "f-provider") return;
+  $("#provider-help").textContent = emailProviderHelp(e.target.value);
+  document.querySelector('label[for="f-email_secret"]').textContent =
+    emailSecretLabel(e.target.value);
+  $("#f-email_secret").value = "";
+  unsavedPrefs = true;
+});
+document.addEventListener("click", async (e) => {
+  if (e.target.id !== "test-email") return;
+  if (!requireAdmin()) return;
+  const button = e.target;
+  button.disabled = true;
+  try {
+    if (unsavedPrefs)
+      throw Error("Guarda primero la configuración antes de enviar la prueba.");
+    const { error } = await db.rpc("queue_test_email");
+    if (error) throw error;
+    $("#notification-result").textContent =
+      "Prueba en cola para tu correo de inicio de sesión. El servidor la procesará durante el próximo minuto.";
+    await refresh();
+    if ($("#notification-result"))
+      $("#notification-result").textContent =
+        "Prueba en cola para tu correo de inicio de sesión. Revisa Últimos envíos durante el próximo minuto.";
+  } catch (err) {
+    $("#notification-result").textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 function notificationsPanel() {
   const labels = {
     paper_created: "Nuevo paper",
@@ -827,7 +868,15 @@ function notificationsPanel() {
       "Los avisos se envían a los participantes del paper y al responsable del ticket.",
     ) +
     emailAvailability(settings, true) +
-    `<div class="panel"><form id="notification-form"><label><input type="checkbox" name="email_enabled" ${settings.email_enabled ? "checked" : ""}> Habilitar envío de emails</label><p class="hint">Proveedor: Resend. Requiere API key y remitente de un dominio verificado. La clave se almacena en Supabase Vault y nunca se devuelve al navegador.</p>${field("from_email", "Remitente verificado", "email", settings.from_email, "required")}${field("app_url", "Dirección de la aplicación", "url", settings.app_url, "required")}${field("api_key", "Nueva API key de Resend (vacío conserva la actual)", "password", "", 'autocomplete="new-password"')}<h3>Eventos que generan email</h3>${Object.entries(
+    `<div class="panel"><form id="notification-form"><label><input type="checkbox" name="email_enabled" ${settings.email_enabled ? "checked" : ""}> Habilitar envío de emails</label>${select(
+      "provider",
+      "Servicio de envío",
+      [
+        ["gmail", "Gmail (sin dominio propio)"],
+        ["resend", "Resend (dominio verificado)"],
+      ],
+      settings.provider || "resend",
+    )}<p class="hint" id="provider-help">${emailProviderHelp(settings.provider)}</p>${field("from_email", "Cuenta remitente", "email", settings.from_email, "required")}${field("app_url", "Dirección de la aplicación", "url", settings.app_url, "required")}${field("email_secret", emailSecretLabel(settings.provider), "password", "", 'autocomplete="new-password"')}<p class="hint">Deja el secreto vacío para conservar el que ya guardaste. No uses tu contraseña habitual de Google.</p><h3>Eventos que generan email</h3>${Object.entries(
       labels,
     )
       .map(
@@ -836,7 +885,7 @@ function notificationsPanel() {
       )
       .join(
         "",
-      )}<p id="notification-result" role="status"></p><button class="button primary">Guardar configuración</button></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Solo se encolan emails para los eventos habilitados mientras el envío esté activo.")}</div>`
+      )}<p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Guardar configuración</button><button type="button" class="button" id="test-email">Enviar prueba a mi correo</button></div></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Solo se encolan emails para los eventos habilitados mientras el envío esté activo.")}</div>`
   );
 }
 document.addEventListener("submit", async (e) => {
@@ -850,6 +899,7 @@ document.addEventListener("submit", async (e) => {
   try {
     const row = {
       ...settings,
+      provider: String(f.get("provider") || "resend"),
       from_email: String(f.get("from_email")).trim(),
       app_url: String(f.get("app_url")).trim(),
     };
@@ -864,13 +914,17 @@ document.addEventListener("submit", async (e) => {
       "ticket_updated",
     ])
       row[k] = f.has(k);
-    const apiKey = String(f.get("api_key") || "").trim();
-    if (apiKey) {
-      const { error } = await db.rpc("configure_email_secret", {
-        api_key: apiKey,
-      });
+    const secret = String(f.get("email_secret") || "").trim();
+    if (secret) {
+      const { error } =
+        row.provider === "gmail"
+          ? await db.rpc("configure_gmail_sender", {
+              sender: row.from_email,
+              app_password: secret,
+            })
+          : await db.rpc("configure_email_secret", { api_key: secret });
       if (error) throw error;
-      e.target.elements.api_key.value = "";
+      e.target.elements.email_secret.value = "";
     }
     const { error } = await db
       .from("notification_settings")
