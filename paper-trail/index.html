@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paper Trail · Shared research</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="icon" href="assets/icon.svg" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard"
+        ><span class="brand-icon">P↗</span> Paper Trail</a
+      >
+      <a class="lab-brand" href="https://www.pragmaticslab.com/" target="_blank" rel="noopener noreferrer"><img src="assets/pragmatics-lab.png" alt="" /> Pragmatics Lab</a>
+      <div class="workspace-label">RESEARCH WORKSPACE</div>
+      <nav>
+        <a href="#dashboard" data-nav="dashboard"
+          >▦ <span>Dashboard</span></a
+        ><a href="#papers" data-nav="papers">▤ <span>Papers</span></a
+        ><a href="#tickets" data-nav="tickets">☑ <span>My tickets</span></a
+        ><a href="#researchers" data-nav="researchers"
+          >♧ <span>Researchers</span></a
+        ><a href="#activity" data-nav="activity"
+          >◷ <span>Activity</span><b id="unread"></b
+        ></a>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="live-dot"></span><span id="connection">Private access</span
+        ><small>Moving ideas forward, together.</small>
+      </div>
+    </aside>
+    <div class="shell">
+      <header>
+        <span id="breadcrumb">Research workspace / Dashboard</span>
+        <div class="account">
+          <span id="identity"></span>
+          <details id="admin-menu" hidden>
+            <summary>Administration ▾</summary>
+            <div class="admin-dropdown">
+              <a href="#admin/researchers">Researchers and permissions</a
+              ><a href="#admin/invitations">Invitations</a
+              ><a href="#admin/papers">Paper settings</a
+              ><a href="#admin/notifications">Email notifications</a
+              ><label for="view-user">View tasks for</label
+              ><select
+                id="view-user"
+                aria-label="View another researcher’s tasks"
+              ></select
+              ><small
+                >This changes the view only; your identity and permissions remain the same.</small
+              >
+            </div>
+          </details>
+          <button id="login" class="button small">Continue with Google</button>
+        </div>
+      </header>
+      <div id="notice" role="status"></div>
+      <main id="main"></main>
+      <footer>
+        Paper Trail
+        <span
+          >A space to move research forward. ·
+          <a href="privacy.html">Privacy</a></span
+        >
+      </footer>
+    </div>
+    <dialog id="modal">
+      <form id="editor">
+        <div class="dialog-heading">
+          <h2 id="dialog-title"></h2>
+          <button
+            type="button"
+            id="close-modal"
+            class="icon-button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div id="fields"></div>
+        <p id="form-error" role="alert"></p>
+        <div class="form-actions">
+          <button type="button" id="cancel" class="button">Cancel</button
+          ><button class="button primary" id="save">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

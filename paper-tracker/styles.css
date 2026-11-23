@@ -368,7 +368,40 @@ p {
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 22px;
+  min-width: 0;
 }
+#invite-form {
+  display: grid;
+  gap: 10px;
+  max-width: 650px;
+}
+#invite-form select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+}
+#invite-form .button { justify-self: start; }
+.invitation-link {
+  margin-top: 18px;
+  background: #f6f9f6;
+  overflow-wrap: anywhere;
+}
+#invite-link {
+  display: block;
+  width: 100%;
+  min-height: 82px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.lab-brand { display: flex; align-items: center; gap: 9px; margin-top: 20px; font-size: 11px; color: #526b58; }
+.lab-brand img { width: 36px; height: 36px; object-fit: contain; }
 .task-row,
 .deadline-row,
 .person-row,

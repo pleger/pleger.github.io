@@ -6,6 +6,9 @@ export const statuses = [
   "aceptado",
   "rechazado",
 ];
+export function statusLabel(status) {
+  return ({ "iniciando": "Starting", "en desarrollo": "In development", "enviado": "Submitted", "en revisión": "Under review", "aceptado": "Accepted", "rechazado": "Rejected" })[status] || status;
+}
 export function validOrcid(value) {
   const s = value.replace(/^https:\/\/orcid.org\//, "").toUpperCase();
   if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(s)) return false;
