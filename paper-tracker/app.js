@@ -46,10 +46,13 @@ let settings = {
   ticket_assigned: true,
   ticket_completed: true,
   ticket_updated: false,
+  weekly_digest: true,
   from_email: "",
   app_url: "https://pleger.github.io/paper-tracker/",
 };
 let outbox = [];
+let invitations = [];
+let invitationDraft = null;
 let googleEnabled = false,
   unsavedPrefs = false;
 let state = { researchers: [], papers: [], tickets: [], activity: [] };
@@ -143,19 +146,22 @@ async function refresh() {
     state[names[i]] = results[i].data;
   }
   if (admin()) {
-    const [prefs, queue] = await Promise.all([
+    const [prefs, queue, inviteRows] = await Promise.all([
       db.from("notification_settings").select("*").eq("id", 1).single(),
       db
         .from("notification_outbox")
         .select("id,status,attempts,last_error,created_at")
         .order("created_at", { ascending: false })
         .limit(20),
+      db.from("researcher_invitations").select("id,researcher_id,email,expires_at,accepted_at,created_at").order("created_at", { ascending: false }),
     ]);
     if (generation !== authGeneration) return;
     if (prefs.error) throw prefs.error;
     if (queue.error) throw queue.error;
+    if (inviteRows.error) throw inviteRows.error;
     settings = prefs.data;
     outbox = queue.data;
+    invitations = inviteRows.data;
   }
   if (!actual() || (!$("#modal").open && !unsavedPrefs)) render();
 }
@@ -280,9 +286,10 @@ function render() {
       activity: "Actividad",
     }[section] || "Administración");
   if (!signed) {
+    const pendingInvite = window.sessionStorage.getItem("paper-trail-invite");
     $("#unread").textContent = "";
     $("#main").innerHTML =
-      `<section class="login-panel"><div class="eyebrow">INVESTIGACIÓN COMPARTIDA</div><h1>Bienvenido a Paper Trail</h1><p>Inicia sesión con tu cuenta Google registrada para acceder a los papers y tareas del equipo.</p>${!remote ? '<p class="setup-message">Estamos preparando el acceso privado. La configuración del servicio de autenticación aún está pendiente.</p>' : user ? '<p class="setup-message">Tu cuenta no está registrada o fue desactivada. Contacta a un administrador.</p>' : '<button class="button primary" id="google-signin">Continuar con Google</button>'}</section>`;
+      `<section class="login-panel"><div class="eyebrow">INVESTIGACIÓN COMPARTIDA</div><h1>${pendingInvite ? "Aceptar invitación" : "Bienvenido a Paper Trail"}</h1><p>${pendingInvite ? "Inicia sesión con la cuenta Google a la que se envió la invitación." : "Inicia sesión con tu cuenta Google registrada para acceder a los papers y tareas del equipo."}</p>${!remote ? '<p class="setup-message">Estamos preparando el acceso privado. La configuración del servicio de autenticación aún está pendiente.</p>' : user ? `<p class="setup-message">${pendingInvite ? "Esta cuenta Google no coincide con la invitación, o el enlace venció. Cierra sesión e inicia con el correo invitado." : "Tu cuenta no está registrada o fue desactivada. Contacta a un administrador."}</p>` : '<button class="button primary" id="google-signin">Continuar con Google</button>'}</section>`;
     return;
   }
   if (route.startsWith("admin/") && !admin()) {
@@ -301,6 +308,7 @@ function render() {
       ) +
       `<div class="panel">${state.papers.map((p) => `<div class="person-row"><div class="row-content"><a href="#paper/${p.id}" class="row-title">${esc(p.title)}</a><div class="row-sub">${esc(p.venue)} · ${esc(p.status)} · ${p.researcher_ids.length} participantes</div></div><button class="button small" data-edit-paper="${p.id}">Configurar</button></div>`).join("") || empty("Aún no hay papers para configurar.")}</div>`;
   else if (route === "admin/notifications") html = notificationsPanel();
+  else if (route === "admin/invitations") html = invitationsPanel();
   else if (route === "papers")
     html =
       pageHead(
@@ -388,6 +396,7 @@ function render() {
     (admin() && selected && selected !== actual().id
       ? `<div class="view-banner">Vista de tareas de ${esc(full(person(selected)))}. Las acciones se registran como ${esc(full(actual()))}.</div>`
       : "") + html;
+  if (route === "admin/invitations") inviteEmailOptions();
   const seen = localStorage.getItem("paper-trail-seen") || "";
   const n = state.activity.filter((a) => a.created_at > seen).length;
   $("#unread").textContent = n || "";
@@ -454,7 +463,7 @@ function openEditor(type, id) {
         row.emails?.join(", "),
         'placeholder="nombre@universidad.cl"',
       ) +
-      '<p class="hint">Un correo registrado habilita el acceso con Google a todo este espacio.</p>' +
+      '<p class="hint">Después de agregarlo, crea una invitación en Administración. El correo solo podrá entrar tras aceptarla con Google.</p>' +
       field(
         "orcid",
         "ORCID",
@@ -751,6 +760,12 @@ async function syncSession(session) {
   render();
   if (!user) return;
   try {
+    const pendingInvite = window.sessionStorage.getItem("paper-trail-invite");
+    if (pendingInvite) {
+      const { data: accepted, error: invitationError } = await db.rpc("accept_researcher_invitation", { token: pendingInvite });
+      if (invitationError) throw invitationError;
+      if (accepted) window.sessionStorage.removeItem("paper-trail-invite");
+    }
     await refresh();
     if (generation !== authGeneration) return;
     if (!actual()) {
@@ -778,6 +793,11 @@ async function syncSession(session) {
   }
 }
 async function start() {
+  const invitationToken = location.hash.startsWith("#invite/") ? location.hash.slice(8) : null;
+  if (invitationToken && /^[0-9a-f]{64}$/.test(invitationToken)) {
+    window.sessionStorage.setItem("paper-trail-invite", invitationToken);
+    history.replaceState(null, "", location.pathname + "#dashboard");
+  }
   render();
   if (!remote) {
     notice(
@@ -861,6 +881,7 @@ function notificationsPanel() {
     ticket_assigned: "Ticket asignado o reasignado",
     ticket_completed: "Tarea completada o reabierta",
     ticket_updated: "Otros cambios de tickets",
+    weekly_digest: "Resumen semanal de cada paper (lunes, 9:00 hora de Santiago)",
   };
   return (
     pageHead(
@@ -888,6 +909,43 @@ function notificationsPanel() {
       )}<p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Guardar configuración</button><button type="button" class="button" id="test-email">Enviar prueba a mi correo</button></div></form></div><div class="section-head"><h2>Últimos envíos</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "En cola", sending: "Enviando", sent: "Enviado", failed: "Error", cancelled: "Cancelado" }[o.status] || o.status)} · ${o.attempts} intentos</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("es-CL"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No se han generado envíos. Solo se encolan emails para los eventos habilitados mientras el envío esté activo.")}</div>`
   );
 }
+function invitationsPanel() {
+  return pageHead("Invitaciones", "Solo una cuenta Google invitada puede activar el acceso.") +
+    `<div class="panel"><form id="invite-form"><label for="invite-researcher">Investigador</label><select id="invite-researcher" name="researcher" required>${activeResearchers().filter(r => !r.accepted_at).map(r => `<option value="${esc(r.id)}">${esc(full(r))}</option>`).join("")}</select><label for="invite-email">Correo invitado</label><select id="invite-email" name="email" required></select><p class="hint">Primero agrega al investigador y sus correos en «Investigadores y permisos». El enlace vence en 14 días y solo funciona con ese correo Google.</p><button class="button primary" ${activeResearchers().some(r => !r.accepted_at) ? "" : "disabled"}>Crear invitación</button></form><p id="invite-result" role="status"></p>${invitationDraft ? `<div class="panel"><p>Enlace nuevo para ${esc(invitationDraft.email)}:</p><input id="invite-link" readonly value="${esc(invitationDraft.url)}"><div class="detail-actions"><button class="button" id="copy-invite">Copiar enlace</button><a class="button" href="${esc(invitationDraft.mailto)}">Enviar por correo</a></div><p class="hint">El enlace se muestra solo ahora. Si se pierde, crea otro; el anterior dejará de funcionar.</p></div>` : ""}</div><div class="section-head"><h2>Invitaciones recientes</h2></div><div class="panel">${invitations.map(i => `<div class="person-row"><span>${esc(i.email)} · ${i.accepted_at ? "Aceptada" : new Date(i.expires_at)<new Date() ? "Vencida" : "Pendiente"}</span></div>`).join("") || empty("Aún no hay invitaciones.")}</div>`;
+}
+function inviteEmailOptions() {
+  const selected = $("#invite-researcher")?.value;
+  const researcher = person(selected);
+  if ($("#invite-email")) $("#invite-email").innerHTML = (researcher?.emails || []).map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
+}
+document.addEventListener("change", e => {
+  if (e.target.id === "invite-researcher") inviteEmailOptions();
+});
+document.addEventListener("submit", async e => {
+  if (e.target.id !== "invite-form") return;
+  e.preventDefault();
+  if (!requireAdmin()) return;
+  const form = new FormData(e.target);
+  const researcher = String(form.get("researcher") || "");
+  const email = String(form.get("email") || "");
+  const result = $("#invite-result");
+  try {
+    const { data: token, error } = await db.rpc("create_researcher_invitation", { researcher, email_address: email });
+    if (error) throw error;
+    const url = `${location.origin}${location.pathname}#invite/${encodeURIComponent(token)}`;
+    const subject = "Invitación a Paper Trail";
+    const body = `Te invito a participar en Paper Trail. Abre este enlace e inicia sesión con ${email}:\n\n${url}\n\nEl enlace vence en 14 días.`;
+    invitationDraft = { email, url, mailto: `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` };
+    await refresh();
+    render();
+    inviteEmailOptions();
+  } catch (err) { result.textContent = err.message; }
+});
+document.addEventListener("click", async e => {
+  if (e.target.id !== "copy-invite") return;
+  await navigator.clipboard.writeText($("#invite-link").value);
+  $("#invite-result").textContent = "Enlace copiado.";
+});
 document.addEventListener("submit", async (e) => {
   if (e.target.id !== "notification-form") return;
   e.preventDefault();
@@ -912,6 +970,7 @@ document.addEventListener("submit", async (e) => {
       "ticket_assigned",
       "ticket_completed",
       "ticket_updated",
+      "weekly_digest",
     ])
       row[k] = f.has(k);
     const secret = String(f.get("email_secret") || "").trim();
