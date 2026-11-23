@@ -836,7 +836,7 @@ document.addEventListener("input", (e) => {
 });
 function emailProviderHelp(provider) {
   return provider === "gmail"
-    ? "Envía desde tu cuenta @gmail.com. Activa la verificación en dos pasos de Google y genera una contraseña de aplicación de 16 caracteres. Se guarda cifrada en Supabase Vault."
+    ? "Envía desde una cuenta de Google con Gmail (personal o Workspace). Activa la verificación en dos pasos de Google y genera una contraseña de aplicación de 16 caracteres. Se guarda cifrada en Supabase Vault."
     : "Resend requiere una API key y un remitente de un dominio verificado. La clave se guarda cifrada en Supabase Vault.";
 }
 function emailSecretLabel(provider) {
@@ -893,7 +893,7 @@ function notificationsPanel() {
       "provider",
       "Servicio de envío",
       [
-        ["gmail", "Gmail (sin dominio propio)"],
+        ["gmail", "Gmail o Google Workspace"],
         ["resend", "Resend (dominio verificado)"],
       ],
       settings.provider || "resend",
