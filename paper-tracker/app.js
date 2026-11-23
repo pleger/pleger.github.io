@@ -725,22 +725,23 @@ $("#login").onclick = async () => {
   }
 };
 async function syncSession(session) {
-  authGeneration++;
+  const generation = ++authGeneration;
+  clearInterval(timer);
+  const previousChannel = channel;
+  channel = null;
+  if (previousChannel) await db.removeChannel(previousChannel);
+  if (generation !== authGeneration) return;
   if ($("#modal").open) $("#modal").close();
   unsavedPrefs = false;
   user = session?.user;
   selected = undefined;
-  if (channel) {
-    await db.removeChannel(channel);
-    channel = null;
-  }
-  clearInterval(timer);
   state = { researchers: [], papers: [], tickets: [], activity: [] };
   outbox = [];
   render();
   if (!user) return;
   try {
     await refresh();
+    if (generation !== authGeneration) return;
     if (!actual()) {
       notice(
         "Este correo no está registrado o está desactivado. Solicita acceso a un administrador.",
@@ -749,7 +750,7 @@ async function syncSession(session) {
     }
     notice("");
     channel = db
-      .channel("team-updates")
+      .channel("team-updates-" + generation)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "activity" },
@@ -761,7 +762,8 @@ async function syncSession(session) {
       30000,
     );
   } catch (err) {
-    notice(`No fue posible cargar el espacio privado: ${err.message}`);
+    if (generation === authGeneration)
+      notice(`No fue posible cargar el espacio privado: ${err.message}`);
   }
 }
 async function start() {
@@ -775,7 +777,9 @@ async function start() {
   try {
     const { createClient } =
       await import("https://esm.sh/@supabase/supabase-js@2");
-    db = createClient(config.supabaseUrl, config.supabaseAnonKey);
+    db = createClient(config.supabaseUrl, config.supabaseAnonKey, {
+      auth: { flowType: "pkce" },
+    });
     const response = await fetch(config.supabaseUrl + "/auth/v1/settings", {
       headers: { apikey: config.supabaseAnonKey },
     });
