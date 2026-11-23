@@ -48,6 +48,8 @@ let settings = {
   ticket_completed: true,
   ticket_updated: false,
   weekly_digest: true,
+  weekly_day: 1,
+  weekly_hour: 9,
   from_email: "",
   app_url: "https://pleger.github.io/paper-tracker/",
 };
@@ -884,7 +886,7 @@ function notificationsPanel() {
     ticket_assigned: "Ticket assigned or reassigned",
     ticket_completed: "Task completed or reopened",
     ticket_updated: "Other ticket changes",
-    weekly_digest: "Weekly paper summary (Monday, 9:00 a.m. Santiago time)",
+    weekly_digest: "Weekly paper summary",
   };
   return (
     pageHead(
@@ -909,7 +911,7 @@ function notificationsPanel() {
       )
       .join(
         "",
-      )}<p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Save settings</button><button type="button" class="button" id="test-email">Send test to my email</button></div></form></div><div class="section-head"><h2>Recent deliveries</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "Queued", sending: "Sending", sent: "Sent", failed: "Error", cancelled: "Cancelled" }[o.status] || o.status)} · ${o.attempts} attempts</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("en-GB"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No emails have been queued yet. Only enabled events generate emails while sending is enabled.")}</div>`
+      )}${select("weekly_day", "Weekly summary day", [["1", "Monday"], ["2", "Tuesday"], ["3", "Wednesday"], ["4", "Thursday"], ["5", "Friday"], ["6", "Saturday"], ["7", "Sunday"]], String(settings.weekly_day ?? 1))}${select("weekly_hour", "Weekly summary time (Santiago)", Array.from({length: 24}, (_, h) => [String(h), `${String(h).padStart(2, "0")}:00`]), String(settings.weekly_hour ?? 9))}<p class="hint">Times use Santiago local time, including daylight saving changes. One summary is sent per paper per calendar week.</p><p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Save settings</button><button type="button" class="button" id="test-email">Send test to my email</button></div></form></div><div class="section-head"><h2>Recent deliveries</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "Queued", sending: "Sending", sent: "Sent", failed: "Error", cancelled: "Cancelled" }[o.status] || o.status)} · ${o.attempts} attempts</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("en-GB"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No emails have been queued yet. Only enabled events generate emails while sending is enabled.")}</div>`
   );
 }
 function invitationsPanel() {
@@ -963,6 +965,8 @@ document.addEventListener("submit", async (e) => {
       provider: String(f.get("provider") || "resend"),
       from_email: String(f.get("from_email")).trim(),
       app_url: String(f.get("app_url")).trim(),
+      weekly_day: Number(f.get("weekly_day")),
+      weekly_hour: Number(f.get("weekly_hour")),
     };
     if (!safeUrl(row.app_url))
       throw Error("The application URL must use HTTPS.");
