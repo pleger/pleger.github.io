@@ -210,7 +210,7 @@ function filteredPapers() {
     (!creatorFilter || p.created_by === creatorFilter));
 }
 function taskRow(t) {
-  return `<div class="task-row ${t.completed ? "completed" : ""}"><input type="checkbox" aria-label="Complete ${esc(t.title)}" data-toggle="${t.id}" ${t.completed ? "checked" : ""} ${canWork(t.paper_id) ? "" : "disabled"}><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
+  return `<div class="task-row ${t.completed ? "completed" : ""}"><select aria-label="Ticket status" data-ticket-status="${t.id}" ${canWork(t.paper_id) ? "" : "disabled"}><option value="false" ${!t.completed ? "selected" : ""}>In development</option><option value="true" ${t.completed ? "selected" : ""}>Resolved</option></select><div class="row-content"><div class="row-title">${esc(t.title)}</div><span class="creator-tag">Created by ${esc(person(t.created_by) ? full(person(t.created_by)) : "Unknown")}</span><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}<button class="button small" data-export-ticket="${t.id}">Export Excel</button>${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
 }
 function empty(text) {
   return `<div class="empty">${text}</div>`;
@@ -256,7 +256,7 @@ function dashboard() {
     ]
       .map(
         ([label, n, icon, sub]) =>
-          `<div class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon}</span></div><strong>${n}</strong><small>${sub}</small></div>`,
+          `<${icon === "☑" ? 'a href="#tickets"' : "div"} class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon}</span></div><strong>${n}</strong><small>${sub}</small></${icon === "☑" ? "a" : "div"}>`,
       )
       .join(
         "",
@@ -656,6 +656,23 @@ document.addEventListener("click", async (e) => {
     $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.dataset.exportTicket) {
+    b.disabled = true;
+    try {
+      const t = state.tickets.find((t) => t.id === b.dataset.exportTicket);
+      const { default: ExcelJS } = await import("https://esm.sh/exceljs@4.4.0?bundle");
+      const book = new ExcelJS.Workbook();
+      const sheet = book.addWorksheet("Ticket");
+      sheet.columns = ["Title", "Paper", "Creator", "Assignee", "Status", "Deadline", "Description"].map((header) => ({ header, width: 35 }));
+      sheet.addRow([t.title, state.papers.find((p) => p.id === t.paper_id)?.title || "", person(t.created_by) ? full(person(t.created_by)) : "Unknown", full(person(t.assignee_id)), t.completed ? "Resolved" : "In development", t.deadline || "", t.description || ""]);
+      sheet.getRow(1).font = { bold: true };
+      const url = URL.createObjectURL(new Blob([await book.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const link = document.createElement("a"); link.href = url; link.download = `paper-trail-ticket-${t.id}.xlsx`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { notice(`Excel export failed: ${err.message}`); }
+    finally { b.disabled = false; }
+    return;
+  }
   if (b.id === "export-papers") {
     try {
       b.disabled = true;
@@ -732,11 +749,11 @@ document.addEventListener("change", async (e) => {
     }
     return;
   }
-  if (e.target.dataset.toggle) {
-    const t = state.tickets.find((t) => t.id === e.target.dataset.toggle);
+  if (e.target.dataset.ticketStatus) {
+    const t = state.tickets.find((t) => t.id === e.target.dataset.ticketStatus);
     e.target.disabled = true;
     try {
-      await persist("tickets", { ...t, completed: e.target.checked }, true);
+      await persist("tickets", { ...t, completed: e.target.value === "true" }, true);
     } catch (err) {
       notice(err.message);
       render();
@@ -929,7 +946,7 @@ function notificationsPanel() {
     paper_created: "New paper",
     paper_updated: "Paper changes and status updates",
     ticket_assigned: "Ticket assigned or reassigned",
-    ticket_completed: "Task completed or reopened",
+    ticket_completed: "Ticket status changes (notify creator and assignee)",
     ticket_updated: "Other ticket changes",
     weekly_digest: "Weekly paper summary",
   };
