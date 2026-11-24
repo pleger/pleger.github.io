@@ -252,6 +252,14 @@ p {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
+.paper-grid.paper-list { grid-template-columns: minmax(0, 1fr); }
+.paper-list .paper-card { min-height: 0; }
+.paper-list .list-description { display: block; }
+.list-description { display: none; color: var(--muted); font-size: 13px; margin: 0 0 14px; white-space: pre-wrap; }
+.creator-tag { display: inline-block; align-self: flex-start; width: fit-content; margin: 9px 0; padding: 5px 9px; border-radius: 999px; background: #e9f3ea; color: #24513a; font-size: 11px; font-weight: 600; }
+.checkbox-field { display: flex; align-items: center; gap: 9px; margin: 14px 0; }
+#fields .checkbox-field input { width: 16px; height: 16px; padding: 0; flex: none; }
+.toolbar { flex-wrap: wrap; }
 .paper-card {
   background: #fff;
   border: 1px solid var(--border);

@@ -37,6 +37,8 @@ let db,
   editing,
   filter = "",
   statusFilter = "",
+  creatorFilter = "",
+  paperLayout = "grid",
   authGeneration = 0;
 let settings = {
   id: 1,
@@ -196,7 +198,16 @@ function paperCard(p) {
   const ts = state.tickets.filter((t) => t.paper_id === p.id),
     done = ts.filter((t) => t.completed).length,
     progress = ts.length ? Math.round((done / ts.length) * 100) : 0;
-  return `<article class="paper-card"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conference" : "▤ Journal"}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><p>${esc(p.venue || "Venue to be determined")}</p><div class="progress-meta"><span>Completed tasks</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
+  return `<article class="paper-card"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conference" : "▤ Journal"}${p.is_project ? " · Project" : ""}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><div class="creator-tag">Created by ${esc(person(p.created_by) ? full(person(p.created_by)) : "Unknown")}</div><p>${esc(p.venue || "Venue to be determined")}</p><div class="list-description">${esc(p.description || "No project description.")}</div><div class="progress-meta"><span>Completed tasks</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
+}
+function visiblePapers() {
+  return admin() ? state.papers : state.papers.filter((p) => p.researcher_ids.includes(actual()?.id));
+}
+function filteredPapers() {
+  return visiblePapers().filter((p) =>
+    p.title.toLowerCase().includes(filter.toLowerCase()) &&
+    (!statusFilter || p.status === statusFilter) &&
+    (!creatorFilter || p.created_by === creatorFilter));
 }
 function taskRow(t) {
   return `<div class="task-row ${t.completed ? "completed" : ""}"><input type="checkbox" aria-label="Complete ${esc(t.title)}" data-toggle="${t.id}" ${t.completed ? "checked" : ""} ${canWork(t.paper_id) ? "" : "disabled"}><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
@@ -208,7 +219,7 @@ function dashboard() {
   const mine = state.tickets
     .filter((t) => t.assignee_id === me() && !t.completed)
     .sort((a, b) => (a.deadline || "9999").localeCompare(b.deadline || "9999"));
-  const deadlines = state.papers
+  const deadlines = visiblePapers()
     .filter((p) => p.deadline && !["aceptado", "rechazado"].includes(p.status))
     .sort((a, b) => a.deadline.localeCompare(b.deadline));
   return (
@@ -220,19 +231,19 @@ function dashboard() {
     `<div class="stats">${[
       [
         "Papers in workspace",
-        state.papers.length,
+        visiblePapers().length,
         "▤",
         "Research projects",
       ],
       [
         "In development",
-        state.papers.filter((p) => p.status === "en desarrollo").length,
+        visiblePapers().filter((p) => p.status === "en desarrollo").length,
         "↗",
         "Ideas taking shape",
       ],
       [
         "Under review",
-        state.papers.filter((p) => p.status === "en revisión").length,
+        visiblePapers().filter((p) => p.status === "en revisión").length,
         "◷",
         "Awaiting updates",
       ],
@@ -249,7 +260,7 @@ function dashboard() {
       )
       .join(
         "",
-      )}</div><div class="section-head"><h2>Papers in progress <span class="badge">${state.papers.length}</span></h2><a href="#papers">View all →</a></div>${state.papers.length ? `<div class="paper-grid">${state.papers.slice(0, 6).map(paperCard).join("")}</div>` : `<div class="empty large"><h3>Your next paper starts here</h3><p>Create a project, bring its authors together, and define the next step.</p>${addButton("paper", "Create your first paper")}</div>`}<div class="lower-grid"><section><div class="section-head"><h2>My next steps</h2><a href="#tickets">All my tickets →</a></div><div class="panel">${mine.slice(0, 5).map(taskRow).join("") || empty("All caught up. You have no pending tasks.")}</div></section><section><div class="section-head"><h2>Submission deadlines</h2><span class="eyebrow">SCHEDULE</span></div><div class="panel">${
+      )}</div><div class="section-head"><h2>Papers in progress <span class="badge">${visiblePapers().length}</span></h2><a href="#papers">View all →</a></div>${visiblePapers().length ? `<div class="paper-grid">${visiblePapers().slice(0, 6).map(paperCard).join("")}</div>` : `<div class="empty large"><h3>Your next paper starts here</h3><p>Create a project, bring its authors together, and define the next step.</p>${addButton("paper", "Create your first paper")}</div>`}<div class="lower-grid"><section><div class="section-head"><h2>My next steps</h2><a href="#tickets">All my tickets →</a></div><div class="panel">${mine.slice(0, 5).map(taskRow).join("") || empty("All caught up. You have no pending tasks.")}</div></section><section><div class="section-head"><h2>Submission deadlines</h2><span class="eyebrow">SCHEDULE</span></div><div class="panel">${
       deadlines
         .slice(0, 5)
         .map(
@@ -317,18 +328,9 @@ function render() {
       pageHead(
         "Our papers",
         "From first draft to publication.",
-        addButton("paper", "New paper"),
+        `${addButton("paper", "New paper")} <button class="button" id="export-papers" type="button">Export Excel</button>`,
       ) +
-      `<div class="toolbar"><input id="search" placeholder="Search papers…" aria-label="Search papers" value="${esc(filter)}"><select id="status-filter" aria-label="Filter by status"><option value="">All statuses</option>${statuses.map((s) => `<option value="${esc(s)}" ${statusFilter === s ? "selected" : ""}>${esc(statusLabel(s))}</option>`).join("")}</select></div><div class="paper-grid">${
-        state.papers
-          .filter(
-            (p) =>
-              p.title.toLowerCase().includes(filter.toLowerCase()) &&
-              (!statusFilter || p.status === statusFilter),
-          )
-          .map(paperCard)
-          .join("") || empty("No papers to display.")
-      }</div>`;
+      `<div class="toolbar"><input id="search" placeholder="Search papers…" aria-label="Search papers" value="${esc(filter)}"><select id="status-filter" aria-label="Filter by status"><option value="">All statuses</option>${statuses.map((s) => `<option value="${esc(s)}" ${statusFilter === s ? "selected" : ""}>${esc(statusLabel(s))}</option>`).join("")}</select><select id="creator-filter" aria-label="Filter by creator"><option value="">All creators</option>${activeResearchers().filter((r) => visiblePapers().some((p) => p.created_by === r.id)).map((r) => `<option value="${esc(r.id)}" ${creatorFilter === r.id ? "selected" : ""}>${esc(full(r))}</option>`).join("")}</select><select id="paper-layout" aria-label="Paper layout"><option value="grid" ${paperLayout === "grid" ? "selected" : ""}>Grid</option><option value="list" ${paperLayout === "list" ? "selected" : ""}>Detailed list</option></select></div><div class="paper-grid ${paperLayout === "list" ? "paper-list" : ""}">${filteredPapers().map(paperCard).join("") || empty("No papers to display.")}</div>`;
   else if (route === "researchers" || route === "admin/researchers")
     html =
       pageHead(
@@ -368,7 +370,7 @@ function render() {
       ) +
       `<div class="panel">${state.activity.map((a) => `<div class="activity-row"><span class="avatar">↗</span><div class="row-content"><div class="row-title">${esc(a.message)}</div><div class="row-sub">${esc(full(person(a.actor_id)))} · ${esc(new Date(a.created_at).toLocaleString("en-GB"))} ${a.paper_id ? `· <a href="#paper/${a.paper_id}">View paper →</a>` : ""}</div></div></div>`).join("") || empty("Team updates will appear here.")}</div>`;
   } else if (route.startsWith("paper/")) {
-    const p = state.papers.find((p) => p.id === route.split("/")[1]);
+    const p = visiblePapers().find((p) => p.id === route.split("/")[1]);
     if (!p) html = empty("Paper not found.");
     else {
       const ts = state.tickets.filter((t) => t.paper_id === p.id);
@@ -384,7 +386,7 @@ function render() {
             .sort((a, b) => Number(a.completed) - Number(b.completed))
             .map(taskRow)
             .join("") || empty("Define the next step for this paper.")
-        }</div><div class="section-head"><h2>My tickets en este paper</h2></div><div class="panel">${
+        }</div><div class="section-head"><h2>My tickets in this paper</h2></div><div class="panel">${
           ts
             .filter((t) => t.assignee_id === me() && !t.completed)
             .map(taskRow)
@@ -515,6 +517,7 @@ function openEditor(type, id) {
         statuses.map((s) => [s, statusLabel(s)]),
         row.status || "iniciando",
       ) +
+      `<label class="checkbox-field"><input type="checkbox" name="is_project" ${row.is_project ? "checked" : ""}> This paper also functions as a project</label>` +
       deadlineFields(row.deadline) +
       participantFields(
         activeResearchers(),
@@ -606,6 +609,7 @@ $("#editor").addEventListener("submit", async (e) => {
         venue: str("venue"),
         github_url: str("github_url"),
         status: str("status"),
+        is_project: f.has("is_project"),
         deadline:
           str("deadline_mode") === "none" ? null : str("deadline") || null,
         researcher_ids: f.getAll("researcher_ids"),
@@ -652,6 +656,45 @@ document.addEventListener("click", async (e) => {
     $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.id === "export-papers") {
+    try {
+      b.disabled = true;
+      const { default: ExcelJS } = await import("https://esm.sh/exceljs@4.4.0?bundle");
+      const book = new ExcelJS.Workbook();
+      const sheet = book.addWorksheet("Papers");
+      sheet.columns = [
+        { header: "Title", key: "title", width: 55 },
+        { header: "Creator", key: "creator", width: 26 },
+        { header: "Project", key: "project", width: 12 },
+        { header: "Type", key: "kind", width: 16 },
+        { header: "Status", key: "status", width: 20 },
+        { header: "Venue", key: "venue", width: 32 },
+        { header: "Deadline", key: "deadline", width: 18 },
+        { header: "Participants", key: "participants", width: 45 },
+        { header: "Completed tickets", key: "completed", width: 20 },
+        { header: "Total tickets", key: "total", width: 18 },
+        { header: "Repository", key: "repository", width: 48 },
+        { header: "Description", key: "description", width: 70 },
+      ];
+      for (const p of filteredPapers()) {
+        const tickets = state.tickets.filter((t) => t.paper_id === p.id);
+        sheet.addRow({ title: p.title, creator: person(p.created_by) ? full(person(p.created_by)) : "Unknown", project: p.is_project ? "Yes" : "No", kind: p.kind, status: statusLabel(p.status), venue: p.venue, deadline: p.deadline || "", participants: p.researcher_ids.map((id) => full(person(id))).join(", "), completed: tickets.filter((t) => t.completed).length, total: tickets.length, repository: p.github_url, description: p.description });
+      }
+      sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+      sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF205B45" } };
+      sheet.autoFilter = { from: "A1", to: "L1" };
+      sheet.views = [{ state: "frozen", ySplit: 1 }];
+      const bytes = await book.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "paper-trail-papers.xlsx";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { notice(`Excel export failed: ${err.message}`); }
+    finally { b.disabled = false; }
+    return;
+  }
   if (b.id === "google-signin") {
     $("#login").click();
     return;
@@ -669,6 +712,8 @@ document.addEventListener("click", async (e) => {
       );
 });
 document.addEventListener("change", async (e) => {
+  if (e.target.id === "creator-filter") { creatorFilter = e.target.value; render(); return; }
+  if (e.target.id === "paper-layout") { paperLayout = e.target.value; render(); return; }
   if (e.target.id === "deadline-mode") {
     syncDeadlineFields($("#editor"));
     return;
