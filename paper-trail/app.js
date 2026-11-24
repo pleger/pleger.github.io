@@ -57,6 +57,17 @@ let settings = {
 };
 let outbox = [];
 let invitations = [];
+let loginLogs = [];
+async function logLogin(stage) {
+  try { const { error } = await db.rpc("record_login_attempt", { stage, browser_info: navigator.userAgent.slice(0, 300) }); if (error) console.warn("Login audit unavailable", error.code); } catch { console.warn("Login audit unavailable"); }
+}
+async function loadLoginLogs() {
+ const { data, error } = await db.from("login_logs").select("created_at,email,outcome,detail,browser").order("created_at", { ascending: false }).limit(200);
+ if (error) throw error; loginLogs = data; render();
+}
+function loginLogsPanel() {
+ return pageHead("Sign-in log", "Latest 200 events. Access decisions are verified by the server; browser reports are marked unverified.", '<button class="button" id="refresh-login-logs">Refresh</button>') + `<div class="panel">${loginLogs.map((l) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc(l.email || "Anonymous")} · ${esc(l.outcome)}</div><div class="row-sub">${esc(new Date(l.created_at).toLocaleString("en-GB"))} · ${esc(l.detail)}</div><div class="row-sub">${esc(l.browser)}</div></div></div>`).join("") || empty("No events loaded. Click Refresh.")}</div>`;
+}
 let invitationDraft = null;
 let googleEnabled = false,
   unsavedPrefs = false;
@@ -303,7 +314,7 @@ function render() {
     const pendingInvite = window.sessionStorage.getItem("paper-trail-invite");
     $("#unread").textContent = "";
     $("#main").innerHTML =
-      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Your account is not registered or has been deactivated. Contact an administrator."}</p>` : '<button class="button primary" id="google-signin">Continue with Google</button>'}</section>`;
+      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Your account is not registered or has been deactivated. Contact an administrator."}</p><p>Current Google account: <strong>${esc(user.email)}</strong></p><button class="button primary" id="switch-account">Choose another Google account</button>` : '<button class="button primary" id="google-signin">Continue with Google</button>'}</section>`;
     return;
   }
   if (route.startsWith("admin/") && !admin()) {
@@ -321,6 +332,7 @@ function render() {
         "Edit participants, venue, editorial status, repository, and dates.",
       ) +
       `<div class="panel">${state.papers.map((p) => `<div class="person-row"><div class="row-content"><a href="#paper/${p.id}" class="row-title">${esc(p.title)}</a><div class="row-sub">${esc(p.venue)} · ${esc(statusLabel(p.status))} · ${p.researcher_ids.length} participants</div></div><button class="button small" data-edit-paper="${p.id}">Configure</button></div>`).join("") || empty("There are no papers to configure yet.")}</div>`;
+  else if (route === "admin/login-logs") html = loginLogsPanel();
   else if (route === "admin/notifications") html = notificationsPanel();
   else if (route === "admin/invitations") html = invitationsPanel();
   else if (route === "papers")
@@ -656,6 +668,10 @@ document.addEventListener("click", async (e) => {
     $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.id === "refresh-login-logs") { try { await loadLoginLogs(); } catch (err) { notice(err.message); } return; }
+  if (b.id === "switch-account") {
+    try { const { error } = await db.auth.signOut({ scope: "local" }); if (error) throw error; await syncSession(null); await beginGoogleLogin(); } catch (err) { notice(err.message); } return;
+  }
   if (b.dataset.exportTicket) {
     b.disabled = true;
     try {
@@ -779,6 +795,11 @@ $("#view-user").onchange = (e) => {
   render();
 };
 window.addEventListener("hashchange", render);
+async function beginGoogleLogin() {
+ await logLogin("started");
+ const { error } = await db.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname, queryParams: { prompt: "select_account" } } });
+ if (error) { await logLogin("oauth_error"); throw error; }
+}
 $("#login").onclick = async () => {
   if (!remote) {
     notice(
@@ -798,14 +819,7 @@ $("#login").onclick = async () => {
         );
         return;
       }
-      const { error } = await db.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: location.origin + location.pathname,
-          queryParams: { prompt: "select_account" },
-        },
-      });
-      if (error) throw error;
+      await beginGoogleLogin();
     }
   } catch (err) {
     notice(err.message);
@@ -824,6 +838,7 @@ async function syncSession(session) {
   selected = undefined;
   state = { researchers: [], papers: [], tickets: [], activity: [] };
   outbox = [];
+  loginLogs = [];
   render();
   if (!user) return;
   try {
@@ -835,6 +850,8 @@ async function syncSession(session) {
     }
     await refresh();
     if (generation !== authGeneration) return;
+    await logLogin("session");
+    if (admin()) await loadLoginLogs().catch(() => notice("Sign-in log is not available yet."));
     if (!actual()) {
       notice(
         "This email is not registered or is inactive. Request access from an administrator.",
@@ -855,6 +872,7 @@ async function syncSession(session) {
       30000,
     );
   } catch (err) {
+    await logLogin("workspace_error");
     if (generation === authGeneration)
       notice(`Could not load the private workspace: ${err.message}`);
   }
@@ -891,6 +909,8 @@ async function start() {
       if (event !== "INITIAL_SESSION" && event !== "TOKEN_REFRESHED")
         setTimeout(() => syncSession(session), 0);
     });
+    const oauthError = new URLSearchParams(location.hash.slice(1)).get("error") || new URLSearchParams(location.search).get("error");
+    if (oauthError) { await logLogin("oauth_error"); history.replaceState(null, "", location.pathname); notice("Google sign-in did not finish. Please try again and choose your registered account."); }
     const { data, error } = await db.auth.getSession();
     if (error) throw error;
     await syncSession(data.session);
