@@ -314,7 +314,7 @@ function render() {
     const pendingInvite = window.sessionStorage.getItem("paper-trail-invite");
     $("#unread").textContent = "";
     $("#main").innerHTML =
-      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Your account is not registered or has been deactivated. Contact an administrator."}</p><p>Current Google account: <strong>${esc(user.email)}</strong></p><button class="button primary" id="switch-account">Choose another Google account</button>` : '<button class="button primary" id="google-signin">Continue with Google</button>'}</section>`;
+      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Access is not enabled for this account. Your invitation may still be pending, or the account may be unregistered or inactive. Contact an administrator."}</p><p>Current Google account: <strong>${esc(user.email)}</strong></p><button class="button primary" id="switch-account">Choose another Google account</button>` : '<button class="button primary" id="google-signin">Continue with Google</button>'}</section>`;
     return;
   }
   if (route.startsWith("admin/") && !admin()) {
@@ -853,8 +853,18 @@ async function syncSession(session) {
     await logLogin("session");
     if (admin()) await loadLoginLogs().catch(() => notice("Sign-in log is not available yet."));
     if (!actual()) {
+      // Recover a rejected stored session once per account per tab. Never loop on a denied OAuth callback.
+      const recoveryKey = "paper-trail-login-recovery:" + user.id;
+      if (!window.sessionStorage.getItem(recoveryKey) && googleEnabled && !pendingInvite) {
+        window.sessionStorage.setItem(recoveryKey, "attempted");
+        const { error } = await db.auth.signOut({ scope: "local" });
+        if (error) throw error;
+        await syncSession(null);
+        await beginGoogleLogin();
+        return;
+      }
       notice(
-        "This email is not registered or is inactive. Request access from an administrator.",
+        "Access is not enabled for this email. Ask an administrator to check your registration and invitation.",
       );
       return;
     }
