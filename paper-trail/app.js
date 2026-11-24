@@ -58,12 +58,29 @@ let settings = {
 let outbox = [];
 let invitations = [];
 let loginLogs = [];
+let accessStatus = null;
+let accessError = "";
+let accessRequests = [];
 async function logLogin(stage) {
   try { const { error } = await db.rpc("record_login_attempt", { stage, browser_info: navigator.userAgent.slice(0, 300) }); if (error) console.warn("Login audit unavailable", error.code); } catch { console.warn("Login audit unavailable"); }
 }
 async function loadLoginLogs() {
  const { data, error } = await db.from("login_logs").select("created_at,email,outcome,detail,browser").order("created_at", { ascending: false }).limit(200);
  if (error) throw error; loginLogs = data; render();
+}
+function accessDeniedPanel() {
+ const reasons = {
+  not_registered: ["Your email is not registered", "Google verified your identity, but this email has not been added to Paper Trail. Request an invitation or choose your registered Google account."],
+  inactive: ["Your account is deactivated", "An administrator must review and reactivate your account before you can access the workspace."],
+  invitation_required: ["Invitation acceptance is required", "Your researcher profile exists. Open your invitation link and sign in with this Google email. If you do not have a link, request one below."],
+  wrong_account: ["This invitation belongs to another Google account", "Choose the Google account that received the invitation. For privacy, we do not show the invited email here."],
+  expired_invitation: ["Your invitation has expired", "Ask for a new invitation using the button below. The previous link can no longer activate access."],
+  invalid_invitation: ["This invitation link is invalid", "The link may have been replaced or copied incompletely. Request a new invitation."],
+  used_invitation: ["This invitation has already been used", "Ask an administrator to review your account or choose another Google account."],
+  allowed: ["Your account is enabled", "Retry loading the workspace. If it still fails, report the error below to an administrator."],
+ };
+ const [title, explanation] = accessError ? ["We could not verify your workspace access", "A connection or service error prevented the access check. Retry before requesting an invitation."] : reasons[accessStatus?.reason] || ["Checking workspace access", "Google has signed you in. We are checking your registration and invitation."];
+ return `<section class="login-panel"><div class="eyebrow">WORKSPACE ACCESS</div><h1>${esc(title)}</h1><p>${esc(explanation)}</p><p>Google account: <strong>${esc(user.email)}</strong></p>${accessError ? `<p class="setup-message" role="alert">${esc(accessError)}</p>` : ""}<div class="detail-actions"><button class="button primary" id="switch-account">Choose another Google account</button><button class="button" id="retry-access">Check access again</button>${accessStatus && accessStatus.reason !== "allowed" && !accessError ? `<button class="button" id="request-access" ${accessStatus.request_pending ? "disabled" : ""}>${accessStatus.request_pending ? "Request pending" : "Request invitation / access review"}</button>` : ""}</div><p id="access-result" role="status">${accessStatus?.request_pending ? "Your request is saved. An administrator can review it in Invitations. Access is enabled only after approval and invitation acceptance." : ""}</p></section>`;
 }
 function loginLogsPanel() {
  return pageHead("Sign-in log", "Latest 200 events. Access decisions are verified by the server; browser reports are marked unverified.", '<button class="button" id="refresh-login-logs">Refresh</button>') + `<div class="panel">${loginLogs.map((l) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc(l.email || "Anonymous")} · ${esc(l.outcome)}</div><div class="row-sub">${esc(new Date(l.created_at).toLocaleString("en-GB"))} · ${esc(l.detail)}</div><div class="row-sub">${esc(l.browser)}</div></div></div>`).join("") || empty("No events loaded. Click Refresh.")}</div>`;
@@ -178,6 +195,9 @@ async function refresh() {
     settings = prefs.data;
     outbox = queue.data;
     invitations = inviteRows.data;
+    const requests = await db.from("access_requests").select("id,email,created_at,reviewed_at").is("reviewed_at", null).order("created_at", { ascending: false }).limit(100);
+    if (generation !== authGeneration) return;
+    accessRequests = requests.data || [];
   }
   if (!actual() || (!$("#modal").open && !unsavedPrefs)) render();
 }
@@ -313,8 +333,8 @@ function render() {
   if (!signed) {
     const pendingInvite = window.sessionStorage.getItem("paper-trail-invite");
     $("#unread").textContent = "";
-    $("#main").innerHTML =
-      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Access is not enabled for this account. Your invitation may still be pending, or the account may be unregistered or inactive. Contact an administrator."}</p><p>Current Google account: <strong>${esc(user.email)}</strong></p><button class="button primary" id="switch-account">Choose another Google account</button>` : '<button class="button primary" id="google-signin">Continue with Google</button>'}</section>`;
+    $("#main").innerHTML = remote && user ? accessDeniedPanel() :
+      `<section class="login-panel"><div class="eyebrow">SHARED RESEARCH</div><h1>${pendingInvite ? "Accept invitation" : "Welcome to Paper Trail"}</h1><p>${pendingInvite ? "Sign in with the Google account that received the invitation." : "Sign in with your registered Google account to access the team’s papers and tasks."}</p>${!remote ? '<p class="setup-message">Private access is being prepared. The authentication service has not yet been configured.</p>' : user ? `<p class="setup-message">${pendingInvite ? "This Google account does not match the invitation or the link has expired. Sign out and sign in with the invited email." : "Access is not enabled for this account. Your invitation may still be pending, or the account may be unregistered or inactive. Contact an administrator."}</p><p>Current Google account: <strong>${esc(user.email)}</strong></p><button class="button primary" id="switch-account">Choose another Google account</button>` : `${accessError ? `<p class="setup-message" role="alert">${esc(accessError)}</p>` : ""}<button class="button primary" id="google-signin">Continue with Google</button>`}</section>`;
     return;
   }
   if (route.startsWith("admin/") && !admin()) {
@@ -668,6 +688,20 @@ document.addEventListener("click", async (e) => {
     $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.id === "retry-access") { await syncSession({ user }); return; }
+  if (b.id === "request-access") {
+    b.disabled = true;
+    try {
+      const { error } = await db.rpc("request_workspace_access"); if (error) throw error;
+      const { data, error: statusError } = await db.rpc("my_access_status", { invitation_token: window.sessionStorage.getItem("paper-trail-invite") }); if (statusError) throw statusError;
+      accessStatus = data; render();
+    } catch (err) { $("#access-result").textContent = `Request could not be saved: ${err.message}`; b.disabled = false; }
+    return;
+  }
+  if (b.dataset.reviewAccess) {
+    if (!requireAdmin()) return;
+    try { const { error } = await db.rpc("review_access_request", { request_id: b.dataset.reviewAccess }); if (error) throw error; await refresh(); } catch (err) { notice(err.message); } return;
+  }
   if (b.id === "refresh-login-logs") { try { await loadLoginLogs(); } catch (err) { notice(err.message); } return; }
   if (b.id === "switch-account") {
     try { const { error } = await db.auth.signOut({ scope: "local" }); if (error) throw error; await syncSession(null); await beginGoogleLogin(); } catch (err) { notice(err.message); } return;
@@ -839,6 +873,9 @@ async function syncSession(session) {
   state = { researchers: [], papers: [], tickets: [], activity: [] };
   outbox = [];
   loginLogs = [];
+  accessRequests = [];
+  accessStatus = null;
+  accessError = "";
   render();
   if (!user) return;
   try {
@@ -848,21 +885,15 @@ async function syncSession(session) {
       if (invitationError) throw invitationError;
       if (accepted) window.sessionStorage.removeItem("paper-trail-invite");
     }
+    const { data: status, error: statusError } = await db.rpc("my_access_status", { invitation_token: window.sessionStorage.getItem("paper-trail-invite") });
+    if (generation !== authGeneration) return;
+    if (statusError) throw statusError;
+    accessStatus = status;
     await refresh();
     if (generation !== authGeneration) return;
     await logLogin("session");
     if (admin()) await loadLoginLogs().catch(() => notice("Sign-in log is not available yet."));
     if (!actual()) {
-      // Recover a rejected stored session once per account per tab. Never loop on a denied OAuth callback.
-      const recoveryKey = "paper-trail-login-recovery:" + user.id;
-      if (!window.sessionStorage.getItem(recoveryKey) && googleEnabled && !pendingInvite) {
-        window.sessionStorage.setItem(recoveryKey, "attempted");
-        const { error } = await db.auth.signOut({ scope: "local" });
-        if (error) throw error;
-        await syncSession(null);
-        await beginGoogleLogin();
-        return;
-      }
       notice(
         "Access is not enabled for this email. Ask an administrator to check your registration and invitation.",
       );
@@ -883,8 +914,7 @@ async function syncSession(session) {
     );
   } catch (err) {
     await logLogin("workspace_error");
-    if (generation === authGeneration)
-      notice(`Could not load the private workspace: ${err.message}`);
+    if (generation === authGeneration) { accessError = err.message; render(); notice(`Could not load the private workspace: ${err.message}`); }
   }
 }
 async function start() {
@@ -920,12 +950,15 @@ async function start() {
         setTimeout(() => syncSession(session), 0);
     });
     const oauthError = new URLSearchParams(location.hash.slice(1)).get("error") || new URLSearchParams(location.search).get("error");
-    if (oauthError) { await logLogin("oauth_error"); history.replaceState(null, "", location.pathname); notice("Google sign-in did not finish. Please try again and choose your registered account."); }
+    if (oauthError) { await logLogin("oauth_error"); history.replaceState(null, "", location.pathname); accessError = oauthError === "access_denied" ? "Google sign-in was cancelled or permission was denied. Continue with Google to try again." : "Google sign-in could not be completed. Please try again. If this continues, ask an administrator to check the sign-in log."; }
     const { data, error } = await db.auth.getSession();
     if (error) throw error;
+    const oauthMessage = accessError;
     await syncSession(data.session);
+    if (!data.session && oauthMessage) { accessError = oauthMessage; render(); }
   } catch (err) {
-    notice(`Could not connect: ${err.message}`);
+    accessError = `Could not connect to the sign-in service: ${err.message}`; render();
+    notice(accessError);
   }
 }
 document.addEventListener("input", (e) => {
@@ -1008,6 +1041,7 @@ function notificationsPanel() {
 }
 function invitationsPanel() {
   return pageHead("Invitations", "Only an invited Google account can activate access.") +
+    `<div class="section-head"><h2>Access requests</h2></div><p>For a new email, add a researcher first. Then create an invitation below and share its link. Marking a request reviewed does not grant access or send an email.</p><div class="panel">${accessRequests.map(r => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc(r.email)}</div><div class="row-sub">${esc(new Date(r.created_at).toLocaleString("en-GB"))}</div></div><button class="button small" data-review-access="${esc(r.id)}">Mark reviewed</button></div>`).join("") || empty("No pending access requests.")}</div>` +
     `<div class="panel"><form id="invite-form"><label for="invite-researcher">Researcher</label><select id="invite-researcher" name="researcher" required>${activeResearchers().filter(r => !r.accepted_at).map(r => `<option value="${esc(r.id)}">${esc(full(r))}</option>`).join("")}</select><label for="invite-email">Invited email</label><select id="invite-email" name="email" required></select><p class="hint">First add the researcher and their emails under Researchers and permissions. The link expires in 14 days and works only with that Google email address.</p><button class="button primary" ${activeResearchers().some(r => !r.accepted_at) ? "" : "disabled"}>Create invitation</button></form><p id="invite-result" role="status"></p>${invitationDraft ? `<div class="panel invitation-link"><p>New link for ${esc(invitationDraft.email)}:</p><textarea id="invite-link" readonly aria-label="Invitation link">${esc(invitationDraft.url)}</textarea><div class="detail-actions"><button class="button" id="copy-invite">Copy link</button><a class="button" href="${esc(invitationDraft.mailto)}">Send by email</a></div><p class="hint">This link is shown only now. If lost, create another; the previous link will stop working.</p></div>` : ""}</div><div class="section-head"><h2>Recent invitations</h2></div><div class="panel">${invitations.map(i => `<div class="person-row"><span>${esc(i.email)} · ${i.accepted_at ? "Accepted" : new Date(i.expires_at)<new Date() ? "Expired" : "Pending"}</span></div>`).join("") || empty("No invitations yet.")}</div>`;
 }
 function inviteEmailOptions() {
