@@ -39,6 +39,7 @@ let db,
   statusFilter = "",
   creatorFilter = "",
   paperLayout = "grid",
+  paperSort = "newest",
   authGeneration = 0;
 let settings = {
   id: 1,
@@ -212,6 +213,7 @@ async function persist(table, row, update = false) {
     delete payload.id;
     delete payload.created_at;
     if (table === "tickets") delete payload.paper_id;
+    if (table === "papers") { delete payload.status_changed_at; delete payload.created_by; }
   }
   const { error } = await (update
     ? db.from(table).update(payload).eq("id", row.id)
@@ -229,7 +231,7 @@ function paperCard(p) {
   const ts = state.tickets.filter((t) => t.paper_id === p.id),
     done = ts.filter((t) => t.completed).length,
     progress = ts.length ? Math.round((done / ts.length) * 100) : 0;
-  return `<article class="paper-card"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conference" : "▤ Journal"}${p.is_project ? " · Project" : ""}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><div class="creator-tag">Created by ${esc(person(p.created_by) ? full(person(p.created_by)) : "Unknown")}</div><p>${esc(p.venue || "Venue to be determined")}</p><div class="list-description">${esc(p.description || "No project description.")}</div><div class="progress-meta"><span>Completed tasks</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
+  return `<article class="paper-card status-${esc(p.status.replaceAll(" ", "-"))}"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conference" : "▤ Journal"}${p.is_project ? " · Project" : ""}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><div class="creator-tag">Created by ${esc(person(p.created_by) ? full(person(p.created_by)) : "Unknown")}</div><p>${esc(p.venue || "Venue to be determined")}</p><div class="list-description">${esc(p.description || "No project description.")}</div><div class="progress-meta"><span>Completed tasks</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
 }
 function visiblePapers() {
   return admin() ? state.papers : state.papers.filter((p) => p.researcher_ids.includes(actual()?.id));
@@ -238,7 +240,15 @@ function filteredPapers() {
   return visiblePapers().filter((p) =>
     p.title.toLowerCase().includes(filter.toLowerCase()) &&
     (!statusFilter || p.status === statusFilter) &&
-    (!creatorFilter || p.created_by === creatorFilter));
+    (!creatorFilter || p.created_by === creatorFilter)).sort((a, b) => {
+      const date = (p) => p.created_at || "";
+      if (paperSort === "oldest") return date(a).localeCompare(date(b));
+      if (paperSort === "title") return a.title.localeCompare(b.title);
+      if (paperSort === "status") return statusLabel(a.status).localeCompare(statusLabel(b.status)) || date(b).localeCompare(date(a));
+      if (paperSort === "deadline") return (a.deadline || "9999").localeCompare(b.deadline || "9999");
+      if (paperSort === "creator") return full(person(a.created_by)).localeCompare(full(person(b.created_by)));
+      return date(b).localeCompare(date(a));
+    });
 }
 function taskRow(t) {
   return `<div class="task-row ${t.completed ? "completed" : ""}"><select aria-label="Ticket status" data-ticket-status="${t.id}" ${canWork(t.paper_id) ? "" : "disabled"}><option value="false" ${!t.completed ? "selected" : ""}>In development</option><option value="true" ${t.completed ? "selected" : ""}>Resolved</option></select><div class="row-content"><div class="row-title">${esc(t.title)}</div><span class="creator-tag">Created by ${esc(person(t.created_by) ? full(person(t.created_by)) : "Unknown")}</span><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}<button class="button small" data-export-ticket="${t.id}">Export Excel</button>${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
@@ -253,6 +263,12 @@ function dashboard() {
   const deadlines = visiblePapers()
     .filter((p) => p.deadline && !["aceptado", "rechazado"].includes(p.status))
     .sort((a, b) => a.deadline.localeCompare(b.deadline));
+  const monthAgo = new Date();
+  const day = monthAgo.getDate();
+  monthAgo.setDate(1); monthAgo.setMonth(monthAgo.getMonth() - 1);
+  monthAgo.setDate(Math.min(day, new Date(monthAgo.getFullYear(), monthAgo.getMonth() + 1, 0).getDate()));
+  const stale = visiblePapers().filter(p => p.status_changed_at && new Date(p.status_changed_at) < monthAgo).length;
+  const unknown = visiblePapers().filter(p => !p.status_changed_at).length;
   return (
     pageHead(
       "Dashboard",
@@ -278,6 +294,7 @@ function dashboard() {
         "◷",
         "Awaiting updates",
       ],
+      ["Status unchanged over a month", stale, "◴", unknown ? `${unknown} with unknown status date` : "Since last status change"],
       [
         "My pending tasks",
         mine.length,
@@ -362,7 +379,7 @@ function render() {
         "From first draft to publication.",
         `${addButton("paper", "New paper")} <button class="button" id="export-papers" type="button">Export Excel</button>`,
       ) +
-      `<div class="toolbar"><input id="search" placeholder="Search papers…" aria-label="Search papers" value="${esc(filter)}"><select id="status-filter" aria-label="Filter by status"><option value="">All statuses</option>${statuses.map((s) => `<option value="${esc(s)}" ${statusFilter === s ? "selected" : ""}>${esc(statusLabel(s))}</option>`).join("")}</select><select id="creator-filter" aria-label="Filter by creator"><option value="">All creators</option>${activeResearchers().filter((r) => visiblePapers().some((p) => p.created_by === r.id)).map((r) => `<option value="${esc(r.id)}" ${creatorFilter === r.id ? "selected" : ""}>${esc(full(r))}</option>`).join("")}</select><select id="paper-layout" aria-label="Paper layout"><option value="grid" ${paperLayout === "grid" ? "selected" : ""}>Grid</option><option value="list" ${paperLayout === "list" ? "selected" : ""}>Detailed list</option></select></div><div class="paper-grid ${paperLayout === "list" ? "paper-list" : ""}">${filteredPapers().map(paperCard).join("") || empty("No papers to display.")}</div>`;
+      `<div class="toolbar"><input id="search" placeholder="Search papers…" aria-label="Search papers" value="${esc(filter)}"><select id="status-filter" aria-label="Filter by status"><option value="">All statuses</option>${statuses.map((s) => `<option value="${esc(s)}" ${statusFilter === s ? "selected" : ""}>${esc(statusLabel(s))}</option>`).join("")}</select><select id="creator-filter" aria-label="Filter by creator"><option value="">All creators</option>${activeResearchers().filter((r) => visiblePapers().some((p) => p.created_by === r.id)).map((r) => `<option value="${esc(r.id)}" ${creatorFilter === r.id ? "selected" : ""}>${esc(full(r))}</option>`).join("")}</select><select id="paper-sort" aria-label="Sort papers">${[["newest","Newest first"],["oldest","Oldest first"],["title","Title A–Z"],["status","Status"],["deadline","Deadline"],["creator","Creator"]].map(([value,label]) => `<option value="${value}" ${paperSort === value ? "selected" : ""}>${label}</option>`).join("")}</select><select id="paper-layout" aria-label="Paper layout"><option value="grid" ${paperLayout === "grid" ? "selected" : ""}>Grid</option><option value="list" ${paperLayout === "list" ? "selected" : ""}>Detailed list</option></select></div><div class="paper-grid ${paperLayout === "list" ? "paper-list" : ""}">${filteredPapers().map(paperCard).join("") || empty("No papers to display.")}</div>`;
   else if (route === "researchers" || route === "admin/researchers")
     html =
       pageHead(
@@ -780,6 +797,7 @@ document.addEventListener("click", async (e) => {
 });
 document.addEventListener("change", async (e) => {
   if (e.target.id === "creator-filter") { creatorFilter = e.target.value; render(); return; }
+  if (e.target.id === "paper-sort") { paperSort = e.target.value; render(); return; }
   if (e.target.id === "paper-layout") { paperLayout = e.target.value; render(); return; }
   if (e.target.id === "deadline-mode") {
     syncDeadlineFields($("#editor"));
