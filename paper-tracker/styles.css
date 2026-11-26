@@ -264,10 +264,12 @@ p {
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 22px;
+  position: relative;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  min-height: 250px;
+  min-height: 210px;
+  cursor: pointer;
 }
 .paper-card:hover {
   border-color: #a5b9a9;
@@ -316,7 +318,7 @@ p {
 .paper-card p {
   font-size: 11px;
   color: #8b958e;
-  margin: 0 0 18px;
+  margin: 0 0 10px;
 }
 .paper-card h3 a {
   color: #2f4436;
@@ -332,7 +334,7 @@ p {
   height: 4px;
   background: #edf1eb;
   border-radius: 5px;
-  margin: 9px 0 18px;
+  margin: 7px 0 10px;
   overflow: hidden;
 }
 .progress i {
@@ -342,7 +344,7 @@ p {
 }
 .card-bottom {
   border-top: 1px solid #f0f2ef;
-  padding-top: 14px;
+  padding-top: 9px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1136,3 +1138,11 @@ input[type="checkbox"] {
 .paper-card.status-aceptado { border-left-color: #21804a; background: #e9f7ec; }
 .paper-card.status-rechazado { border-left-color: #bd5046; background: #fdefed; }
 .paper-card .badge { font-size: 11px; font-weight: 700; border: 1px solid currentColor; }
+
+/* The title link covers the whole card while remaining a native keyboard link. */
+.paper-card h3 a::after { content: ""; position: absolute; inset: 0; }
+.paper-card:focus-within { outline: 3px solid #236e50; outline-offset: 3px; }
+.paper-card h3 { margin: 8px 0 3px; }
+.paper-card .creator-tag { margin: 5px 0; }
+.paper-list .paper-card { padding-block: 12px; }
+.paper-list .list-description { margin-bottom: 8px; }
