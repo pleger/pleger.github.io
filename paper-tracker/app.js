@@ -53,9 +53,11 @@ let settings = {
   weekly_digest: true,
   weekly_day: 1,
   weekly_hour: 9,
+  stale_after_weeks: 4,
   from_email: "",
   app_url: "https://pleger.github.io/paper-tracker/",
 };
+let staleAfterWeeks = 4;
 let outbox = [];
 let invitations = [];
 let loginLogs = [];
@@ -179,6 +181,12 @@ async function refresh() {
     if (results[i].error) throw results[i].error;
     state[names[i]] = results[i].data;
   }
+  if (actual()) {
+    const { data, error } = await db.rpc("get_status_reminder_weeks");
+    if (generation !== authGeneration) return;
+    if (error) throw error;
+    staleAfterWeeks = data;
+  }
   if (admin()) {
     const [prefs, queue, inviteRows] = await Promise.all([
       db.from("notification_settings").select("*").eq("id", 1).single(),
@@ -212,7 +220,7 @@ async function persist(table, row, update = false) {
   if (update) {
     delete payload.id;
     delete payload.created_at;
-    if (table === "tickets") delete payload.paper_id;
+    if (table === "tickets") { delete payload.paper_id; delete payload.created_by; }
     if (table === "papers") { delete payload.status_changed_at; delete payload.created_by; }
   }
   const { error } = await (update
@@ -251,7 +259,7 @@ function filteredPapers() {
     });
 }
 function taskRow(t) {
-  return `<div class="task-row ${t.completed ? "completed" : ""}"><select aria-label="Ticket status" data-ticket-status="${t.id}" ${canWork(t.paper_id) ? "" : "disabled"}><option value="false" ${!t.completed ? "selected" : ""}>In development</option><option value="true" ${t.completed ? "selected" : ""}>Resolved</option></select><div class="row-content"><div class="row-title">${esc(t.title)}</div><span class="creator-tag">Created by ${esc(person(t.created_by) ? full(person(t.created_by)) : "Unknown")}</span><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}<button class="button small" data-export-ticket="${t.id}">Export Excel</button>${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
+  return `<div class="task-row ${t.completed ? "completed" : ""}"><select aria-label="Ticket status" data-ticket-status="${t.id}" ${canWork(t.paper_id) ? "" : "disabled"}><option value="false" ${!t.completed ? "selected" : ""}>Pending</option><option value="true" ${t.completed ? "selected" : ""}>Completed</option></select><div class="row-content"><div class="row-title">${esc(t.title)}</div><span class="creator-tag">Created by ${esc(person(t.created_by) ? full(person(t.created_by)) : "Unknown")}</span><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}<button class="button small" data-export-ticket="${t.id}">Export Excel</button>${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
 }
 function empty(text) {
   return `<div class="empty">${text}</div>`;
@@ -263,11 +271,8 @@ function dashboard() {
   const deadlines = visiblePapers()
     .filter((p) => p.deadline && !["aceptado", "rechazado"].includes(p.status))
     .sort((a, b) => a.deadline.localeCompare(b.deadline));
-  const monthAgo = new Date();
-  const day = monthAgo.getDate();
-  monthAgo.setDate(1); monthAgo.setMonth(monthAgo.getMonth() - 1);
-  monthAgo.setDate(Math.min(day, new Date(monthAgo.getFullYear(), monthAgo.getMonth() + 1, 0).getDate()));
-  const stale = visiblePapers().filter(p => p.status_changed_at && new Date(p.status_changed_at) < monthAgo).length;
+  const cutoff = Date.now() - staleAfterWeeks * 7 * 24 * 60 * 60 * 1000;
+  const stale = visiblePapers().filter(p => p.status_changed_at && new Date(p.status_changed_at).getTime() < cutoff).length;
   const unknown = visiblePapers().filter(p => !p.status_changed_at).length;
   return (
     pageHead(
@@ -294,7 +299,7 @@ function dashboard() {
         "◷",
         "Awaiting updates",
       ],
-      ["Status unchanged over a month", stale, "◴", unknown ? `${unknown} with unknown status date` : "Since last status change"],
+      [`Status unchanged over ${staleAfterWeeks} ${staleAfterWeeks === 1 ? "week" : "weeks"}`, stale, "◴", unknown ? `${unknown} with unknown status date` : "Since last status change"],
       [
         "My pending tasks",
         mine.length,
@@ -891,6 +896,7 @@ async function syncSession(session) {
   state = { researchers: [], papers: [], tickets: [], activity: [] };
   outbox = [];
   loginLogs = [];
+  staleAfterWeeks = 4;
   accessRequests = [];
   accessStatus = null;
   accessError = "";
@@ -1054,7 +1060,7 @@ function notificationsPanel() {
       )
       .join(
         "",
-      )}${select("weekly_day", "Weekly summary day", [["1", "Monday"], ["2", "Tuesday"], ["3", "Wednesday"], ["4", "Thursday"], ["5", "Friday"], ["6", "Saturday"], ["7", "Sunday"]], String(settings.weekly_day ?? 1))}${select("weekly_hour", "Weekly summary time (Santiago)", Array.from({length: 24}, (_, h) => [String(h), `${String(h).padStart(2, "0")}:00`]), String(settings.weekly_hour ?? 9))}<p class="hint">Times use Santiago local time, including daylight saving changes. One summary is sent per paper per calendar week.</p><p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Save settings</button><button type="button" class="button" id="test-email">Send test to my email</button></div></form></div><div class="section-head"><h2>Recent deliveries</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "Queued", sending: "Sending", sent: "Sent", failed: "Error", cancelled: "Cancelled" }[o.status] || o.status)} · ${o.attempts} attempts</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("en-GB"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No emails have been queued yet. Only enabled events generate emails while sending is enabled.")}</div>`
+      )}${select("stale_after_weeks", "Weeks without a status change", Array.from({length: 52}, (_, i) => [String(i + 1), `${i + 1} ${i === 0 ? "week" : "weeks"}`]), String(settings.stale_after_weeks ?? 4))}<p class="hint">Papers exceeding this threshold are highlighted in the dashboard and mentioned in each scheduled weekly summary.</p>${select("weekly_day", "Weekly summary day", [["1", "Monday"], ["2", "Tuesday"], ["3", "Wednesday"], ["4", "Thursday"], ["5", "Friday"], ["6", "Saturday"], ["7", "Sunday"]], String(settings.weekly_day ?? 1))}${select("weekly_hour", "Weekly summary time (Santiago)", Array.from({length: 24}, (_, h) => [String(h), `${String(h).padStart(2, "0")}:00`]), String(settings.weekly_hour ?? 9))}<p class="hint">Times use Santiago local time, including daylight saving changes. One summary is sent per paper per calendar week.</p><p id="notification-result" role="status"></p><div class="detail-actions"><button class="button primary">Save settings</button><button type="button" class="button" id="test-email">Send test to my email</button></div></form></div><div class="section-head"><h2>Recent deliveries</h2></div><div class="panel">${outbox.map((o) => `<div class="activity-row"><div class="row-content"><div class="row-title">${esc({ pending: "Queued", sending: "Sending", sent: "Sent", failed: "Error", cancelled: "Cancelled" }[o.status] || o.status)} · ${o.attempts} attempts</div><div class="row-sub">${esc(new Date(o.created_at).toLocaleString("en-GB"))} ${esc(o.last_error || "")}</div></div></div>`).join("") || empty("No emails have been queued yet. Only enabled events generate emails while sending is enabled.")}</div>`
   );
 }
 function invitationsPanel() {
@@ -1111,6 +1117,7 @@ document.addEventListener("submit", async (e) => {
       app_url: String(f.get("app_url")).trim(),
       weekly_day: Number(f.get("weekly_day")),
       weekly_hour: Number(f.get("weekly_hour")),
+      stale_after_weeks: Number(f.get("stale_after_weeks")),
     };
     if (!safeUrl(row.app_url))
       throw Error("The application URL must use HTTPS.");
