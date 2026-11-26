@@ -1146,3 +1146,21 @@ input[type="checkbox"] {
 .paper-card .creator-tag { margin: 5px 0; }
 .paper-list .paper-card { padding-block: 12px; }
 .paper-list .list-description { margin-bottom: 8px; }
+
+/* Keep paper search and display controls available while browsing. */
+.paper-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 12px;
+  margin: 0 -12px 22px;
+  background: var(--bg, #f5f8f5);
+  border-radius: 8px;
+  box-shadow: 0 3px 8px rgba(28, 55, 39, .1);
+}
+.paper-toolbar input { min-width: 180px; }
+@media (max-width: 720px) {
+  .paper-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .paper-toolbar input { grid-column: 1 / -1; min-width: 0; }
+  .paper-toolbar select { min-width: 0; padding: 8px; }
+}
