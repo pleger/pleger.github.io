@@ -58,6 +58,8 @@ let settings = {
   app_url: "https://pleger.github.io/paper-tracker/",
 };
 let staleAfterWeeks = 4;
+let reviewCache = {};
+let reviewLoading = new Set();
 let documents = {};
 let documentLoading = new Set();
 let outbox = [];
@@ -118,9 +120,16 @@ function canWork(paperId) {
     (admin() ||
       state.papers
         .find((p) => p.id === paperId)
-        ?.researcher_ids.includes(actual().id))
+        ?.researcher_ids.includes(actual().id) || state.papers.find((p) => p.id === paperId)?.created_by === actual()?.id)
   );
 }
+function paperRole(p) {
+ if (admin()) return "Administrator";
+ if (p?.created_by && p.created_by === actual()?.id) return "Author";
+ if (p?.researcher_ids.includes(actual()?.id)) return "Coauthor";
+ return null;
+}
+function canConfigurePaper(p) { return ["Administrator", "Author"].includes(paperRole(p)); }
 function activeResearchers() {
   return state.researchers.filter((r) => !r.deleted_at);
 }
@@ -216,8 +225,8 @@ async function persist(table, row, update = false) {
   if (!requireEdit()) throw Error("Sign-in required");
   if (table === "researchers" && !requireAdmin())
     throw Error("Administrator permissions required");
-  if (table === "papers" && update && !requireAdmin())
-    throw Error("Only administrators can configure papers");
+  if (table === "papers" && update && !canConfigurePaper(state.papers.find(p => p.id === row.id)))
+    throw Error("Only the author or an administrator can directly edit papers");
   const payload = { ...row };
   if (update) {
     delete payload.id;
@@ -244,7 +253,7 @@ function paperCard(p) {
   return `<article class="paper-card status-${esc(p.status.replaceAll(" ", "-"))}"><div class="card-top"><span class="type">${p.kind === "conference" ? "↗ Conference" : "▤ Journal"}${p.is_project ? " · Project" : ""}</span>${badge(p.status)}</div><h3><a href="#paper/${p.id}">${esc(p.title)}</a></h3><div class="creator-tag">Created by ${esc(person(p.created_by) ? full(person(p.created_by)) : "Unknown")}</div><p>${esc(p.venue || "Venue to be determined")}</p><div class="list-description">${esc(p.description || "No project description.")}</div><div class="progress-meta"><span>Completed tasks</span><span>${done}/${ts.length} · ${progress}%</span></div><div class="progress"><i style="width:${progress}%"></i></div><div class="card-bottom">${avatars(p.researcher_ids)}${due(p.deadline)}</div></article>`;
 }
 function visiblePapers() {
-  return admin() ? state.papers : state.papers.filter((p) => p.researcher_ids.includes(actual()?.id));
+  return admin() ? state.papers : state.papers.filter((p) => p.researcher_ids.includes(actual()?.id) || p.created_by === actual()?.id);
 }
 function filteredPapers() {
   return visiblePapers().filter((p) =>
@@ -259,6 +268,22 @@ function filteredPapers() {
       if (paperSort === "creator") return full(person(a.created_by)).localeCompare(full(person(b.created_by)));
       return date(b).localeCompare(date(a));
     });
+}
+async function loadReview(id) {
+ try {
+  const { data, error } = await db.from("paper_change_requests").select("*").eq("id", id).maybeSingle(); if (error) throw error;
+  reviewCache[id] = data;
+ } catch (err) { reviewCache[id] = null; notice(err.message); }
+ finally { reviewLoading.delete(id); if (location.hash.startsWith(`#review/${id}`)) render(); }
+}
+function reviewPanel(request, choice) {
+ if (!request) return empty("Request not found or you do not have access.");
+ const p = state.papers.find(p => p.id === request.paper_id);
+ const mayDecide = request.status === "pending" && (admin() || request.author_id === actual()?.id);
+ const label = { title:"Title", description:"Description", kind:"Type", venue:"Journal or conference", github_url:"Repository", status:"Status", deadline:"Deadline", researcher_ids:"Participants", is_project:"Project" };
+ const format = (k,v) => k === "researcher_ids" && Array.isArray(v) ? v.map(id => full(person(id))).join(", ") : k === "status" ? statusLabel(v) : v === null ? "None" : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v ?? "");
+ const rows = Object.keys(request.proposed).map(k => `<div class="activity-row"><div class="row-content"><strong>${esc(label[k] || k)}</strong><div class="row-sub">Current at request: ${esc(format(k,request.original[k]))}</div><div>Proposed: ${esc(format(k,request.proposed[k]))}</div></div></div>`).join("");
+ return pageHead("Review change request", p?.title || "Paper") + `<div class="panel"><p>Requested by ${esc(full(person(request.requester_id)))} · ${esc(request.status)}</p>${rows}${mayDecide ? `<p>${choice === "accept" ? "Confirm acceptance to apply these changes." : choice === "reject" ? "Confirm rejection to leave the paper unchanged." : "Choose whether to accept or reject these changes."}</p><div class="detail-actions"><button class="button primary" data-review-decision="${esc(request.id)}:accept">Accept changes</button><button class="button" data-review-decision="${esc(request.id)}:reject">Reject changes</button></div>` : ""}</div>`;
 }
 const documentBucket = "paper-documents";
 const documentTypes = { pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
@@ -455,6 +480,13 @@ function render() {
         "Ticket updates are shared with the entire workspace.",
       ) +
       `<div class="panel">${state.activity.map((a) => `<div class="activity-row"><span class="avatar">↗</span><div class="row-content"><div class="row-title">${esc(a.message)}</div><div class="row-sub">${esc(full(person(a.actor_id)))} · ${esc(new Date(a.created_at).toLocaleString("en-GB"))} ${a.paper_id ? `· <a href="#paper/${a.paper_id}">View paper →</a>` : ""}</div></div></div>`).join("") || empty("Team updates will appear here.")}</div>`;
+  } else if (route.startsWith("review/")) {
+    const [, id, choice] = route.split("/");
+    if (!/^[0-9a-f-]{36}$/i.test(id)) html = empty("Invalid change request link.");
+    else if (reviewCache[id] === undefined) {
+      html = empty("Loading change request…");
+      if (!reviewLoading.has(id)) { reviewLoading.add(id); loadReview(id); }
+    } else html = reviewPanel(reviewCache[id], choice);
   } else if (route.startsWith("paper/")) {
     const p = visiblePapers().find((p) => p.id === route.split("/")[1]);
     if (!p) html = empty("Paper not found.");
@@ -464,7 +496,7 @@ function render() {
         pageHead(p.title, p.venue || "Venue to be determined", "") +
         paperOverview(p, state.researchers, {
           canWork: canWork(p.id),
-          admin: admin(),
+          admin: admin(), role: paperRole(p),
         }) +
         documentsPanel(p) +
         emailAvailability(settings, admin()) +
@@ -512,8 +544,8 @@ function textarea(name, label, value) {
 }
 function openEditor(type, id) {
   if (!requireEdit()) return;
-  if ((type === "researcher" || (type === "paper" && id)) && !requireAdmin())
-    return;
+  if (type === "researcher" && !requireAdmin()) return;
+  if (type === "paper" && id && !paperRole(state.papers.find(p => p.id === id))) { notice("You cannot edit this paper."); return; }
   const table = {
       paper: "papers",
       ticket: "tickets",
@@ -527,7 +559,9 @@ function openEditor(type, id) {
     notice("You must participate in this paper to modify tickets.");
     return;
   }
-  editing = { type, table, id };
+  const requestMode = type === "paper" && id && paperRole(row) === "Coauthor";
+  editing = { type, table, id, requestMode };
+  $("#save").textContent = requestMode ? "Request Save" : "Save";
   $("#dialog-title").textContent =
     `${id ? "Edit" : "Add"} ${{ paper: "paper", ticket: "ticket", researcher: "researcher" }[type]}`;
   $("#form-error").textContent = "";
@@ -582,7 +616,7 @@ function openEditor(type, id) {
         'required maxlength="300"',
       ) +
       textarea("description", "Description", row.description) +
-      '<label for="f-document">Document (PDF, DOC or DOCX; max 20 MB)</label><input id="f-document" name="document" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><p class="hint">The file is private to this paper’s participants and administrators.</p>' +
+      (requestMode ? '<p class="hint">Changes will be sent to the author for approval. Documents cannot be included in a change request.</p>' : '<label for="f-document">Document (PDF, DOC or DOCX; max 20 MB)</label><input id="f-document" name="document" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><p class="hint">The file is private to this paper’s participants and administrators.</p>') +
       select(
         "kind",
         "Type",
@@ -704,7 +738,7 @@ $("#editor").addEventListener("submit", async (e) => {
       };
       if (!row.researcher_ids.length)
         throw Error("Select at least one researcher.");
-      if (!admin() && !row.researcher_ids.includes(actual().id))
+      if (!id && !admin() && !row.researcher_ids.includes(actual().id))
         throw Error("You must include yourself as a paper participant.");
       if (row.github_url && !safeUrl(row.github_url))
         throw Error("The repository must use an HTTPS URL.");
@@ -721,6 +755,12 @@ $("#editor").addEventListener("submit", async (e) => {
         deadline: str("deadline") || null,
         completed: str("completed") === "true",
       };
+    if (editing.requestMode) {
+      const { id: ignored, ...changes } = row;
+      const { error } = await db.rpc("request_paper_changes", { paper: id, changes });
+      if (error) throw error;
+      $("#modal").close(); notice("Change request submitted and the email queued for delivery."); return;
+    }
     const file = type === "paper" ? f.get("document") : null;
     const documentInfo = validateDocument(file);
     const savedId = editing.createdPaperId;
@@ -754,6 +794,12 @@ document.addEventListener("click", async (e) => {
     $("#modal").close();
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.dataset.reviewDecision) {
+    b.disabled = true;
+    try { const [id, decision] = b.dataset.reviewDecision.split(":"); const { data, error } = await db.rpc("decide_paper_changes", { request_id: id, decision }); if (error) throw error; delete reviewCache[id]; await refresh(); notice(`Request ${data}. The requester will be notified by email.`); }
+    catch (err) { notice(err.message); b.disabled = false; }
+    return;
+  }
   if (b.id === "retry-access") { await syncSession({ user }); return; }
   if (b.id === "request-access") {
     b.disabled = true;
@@ -910,6 +956,7 @@ $("#view-user").onchange = (e) => {
 };
 window.addEventListener("hashchange", render);
 async function beginGoogleLogin() {
+ if (/^#review\/[0-9a-f-]{36}(?:\/(?:accept|reject))?$/i.test(location.hash)) sessionStorage.setItem("paper-trail-review", location.hash);
  await logLogin("started");
  const { error } = await db.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname, queryParams: { prompt: "select_account" } } });
  if (error) { await logLogin("oauth_error"); throw error; }
@@ -958,7 +1005,7 @@ async function syncSession(session) {
   user = session?.user;
   selected = undefined;
   state = { researchers: [], papers: [], tickets: [], activity: [] };
-  documents = {}; documentLoading.clear();
+  documents = {}; documentLoading.clear(); reviewCache = {}; reviewLoading.clear();
   outbox = [];
   loginLogs = [];
   staleAfterWeeks = 4;
@@ -1044,6 +1091,7 @@ async function start() {
     if (error) throw error;
     const oauthMessage = accessError;
     await syncSession(data.session);
+    if (data.session && sessionStorage.getItem("paper-trail-review")) { const route = sessionStorage.getItem("paper-trail-review"); sessionStorage.removeItem("paper-trail-review"); location.hash = route; }
     if (!data.session && oauthMessage) { accessError = oauthMessage; render(); }
   } catch (err) {
     accessError = `Could not connect to the sign-in service: ${err.message}`; render();
