@@ -1164,3 +1164,5 @@ input[type="checkbox"] {
   .paper-toolbar input { grid-column: 1 / -1; min-width: 0; }
   .paper-toolbar select { min-width: 0; padding: 8px; }
 }
+
+.app-version { margin: 5px 0 0 50px; color: #496b58; font-size: 12px; font-weight: 600; line-height: 1.3; }
