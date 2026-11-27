@@ -58,6 +58,8 @@ let settings = {
   app_url: "https://pleger.github.io/paper-tracker/",
 };
 let staleAfterWeeks = 4;
+let documents = {};
+let documentLoading = new Set();
 let outbox = [];
 let invitations = [];
 let loginLogs = [];
@@ -258,6 +260,36 @@ function filteredPapers() {
       return date(b).localeCompare(date(a));
     });
 }
+const documentBucket = "paper-documents";
+const documentTypes = { pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+function documentsPanel(p) {
+ const files = documents[p.id];
+ if (!files && !documentLoading.has(p.id)) { documentLoading.add(p.id); loadDocuments(p.id); }
+ return `<div class="section-head"><h2>Paper documents</h2></div><div class="panel">${files ? files.map(file => `<div class="person-row"><span class="row-content">${esc(file.name.replace(/^[0-9a-f-]{36}-/i, ""))}</span><button type="button" class="button small" data-download-document="${esc(p.id + "/" + file.name)}">Download</button></div>`).join("") || empty("No documents uploaded yet.") : empty("Loading documents…")}</div>`;
+}
+async function loadDocuments(paperId) {
+ try {
+  const { data, error } = await db.storage.from(documentBucket).list(paperId, { limit: 100, sortBy: { column: "created_at", order: "desc" } });
+  if (error) throw error;
+  documents[paperId] = data.filter(x => x.id);
+ } catch (err) { documents[paperId] = []; notice(`Could not load documents: ${err.message}`); }
+ finally { documentLoading.delete(paperId); if (location.hash === `#paper/${paperId}` && !$("#modal").open) render(); }
+}
+function validateDocument(file) {
+ if (!file || !file.name) return null;
+ const ext = file.name.split(".").pop().toLowerCase();
+ if (!documentTypes[ext]) throw Error("Choose a PDF, DOC, or DOCX document.");
+ if (file.size > 20 * 1024 * 1024) throw Error("The document must be 20 MB or smaller.");
+ if (!file.size) throw Error("The document is empty.");
+ return { ext, type: documentTypes[ext] };
+}
+async function uploadDocument(paperId, file, info) {
+ const filename = file.name.normalize("NFKC").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || `document.${info.ext}`;
+ const path = `${paperId}/${crypto.randomUUID()}-${filename}`;
+ const { error } = await db.storage.from(documentBucket).upload(path, file, { contentType: info.type, upsert: false });
+ if (error) throw error;
+ delete documents[paperId];
+}
 function taskRow(t) {
   return `<div class="task-row ${t.completed ? "completed" : ""}"><select aria-label="Ticket status" data-ticket-status="${t.id}" ${canWork(t.paper_id) ? "" : "disabled"}><option value="false" ${!t.completed ? "selected" : ""}>Pending</option><option value="true" ${t.completed ? "selected" : ""}>Completed</option></select><div class="row-content"><div class="row-title">${esc(t.title)}</div><span class="creator-tag">Created by ${esc(person(t.created_by) ? full(person(t.created_by)) : "Unknown")}</span><div class="row-sub"><a href="#paper/${t.paper_id}">${esc(state.papers.find((p) => p.id === t.paper_id)?.title || "Paper")}</a> · ${esc(full(person(t.assignee_id)))}</div>${t.description ? `<div class="row-sub">${esc(t.description)}</div>` : ""}</div>${due(t.deadline)}<button class="button small" data-export-ticket="${t.id}">Export Excel</button>${canWork(t.paper_id) ? `<button class="button small" data-edit-ticket="${t.id}">Edit</button>` : ""}</div>`;
 }
@@ -434,6 +466,7 @@ function render() {
           canWork: canWork(p.id),
           admin: admin(),
         }) +
+        documentsPanel(p) +
         emailAvailability(settings, admin()) +
         `<div class="section-head"><h2>Paper tickets <span class="badge">${ts.filter((t) => t.completed).length}/${ts.length} completed</span></h2>${canWork(p.id) ? addButton("ticket", "New ticket") : ""}</div><div class="panel">${
           ts
@@ -549,6 +582,7 @@ function openEditor(type, id) {
         'required maxlength="300"',
       ) +
       textarea("description", "Description", row.description) +
+      '<label for="f-document">Document (PDF, DOC or DOCX; max 20 MB)</label><input id="f-document" name="document" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><p class="hint">The file is private to this paper’s participants and administrators.</p>' +
       select(
         "kind",
         "Type",
@@ -687,7 +721,17 @@ $("#editor").addEventListener("submit", async (e) => {
         deadline: str("deadline") || null,
         completed: str("completed") === "true",
       };
-    await persist(table, row, !!id);
+    const file = type === "paper" ? f.get("document") : null;
+    const documentInfo = validateDocument(file);
+    const savedId = editing.createdPaperId;
+    if (!savedId) {
+      await persist(table, row, !!id);
+      if (type === "paper" && !id) editing.createdPaperId = row.id;
+    }
+    if (documentInfo) {
+      try { await uploadDocument(savedId || row.id, file, documentInfo); }
+      catch (err) { throw Error(`Paper saved, but document upload failed: ${err.message}. Keep this window open and retry.`); }
+    }
     $("#modal").close();
     render();
     if (type === "ticket")
@@ -723,6 +767,19 @@ document.addEventListener("click", async (e) => {
   if (b.dataset.reviewAccess) {
     if (!requireAdmin()) return;
     try { const { error } = await db.rpc("review_access_request", { request_id: b.dataset.reviewAccess }); if (error) throw error; await refresh(); } catch (err) { notice(err.message); } return;
+  }
+  if (b.dataset.downloadDocument) {
+    b.disabled = true;
+    try {
+      const path = b.dataset.downloadDocument;
+      const { data, error } = await db.storage.from(documentBucket).download(path);
+      if (error) throw error;
+      const url = URL.createObjectURL(data); const a = document.createElement("a");
+      a.href = url; a.download = path.split("/").pop().replace(/^[0-9a-f-]{36}-/i, ""); a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) { notice(`Could not download document: ${err.message}`); }
+    finally { b.disabled = false; }
+    return;
   }
   if (b.id === "refresh-login-logs") { try { await loadLoginLogs(); } catch (err) { notice(err.message); } return; }
   if (b.id === "switch-account") {
@@ -883,6 +940,13 @@ $("#login").onclick = async () => {
   }
 };
 async function syncSession(session) {
+  // Auth may emit SIGNED_IN again when the browser tab becomes active.
+  // Keep the open form and selected file when the identity has not changed.
+  if (user && session?.user?.id === user.id && session.user.email === user.email) {
+    user = session.user;
+    await refresh();
+    return;
+  }
   const generation = ++authGeneration;
   clearInterval(timer);
   const previousChannel = channel;
@@ -894,6 +958,7 @@ async function syncSession(session) {
   user = session?.user;
   selected = undefined;
   state = { researchers: [], papers: [], tickets: [], activity: [] };
+  documents = {}; documentLoading.clear();
   outbox = [];
   loginLogs = [];
   staleAfterWeeks = 4;
